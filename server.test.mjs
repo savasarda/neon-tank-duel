@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceBullet, circleTouchesWorld, moveCircle } from './game-physics.mjs';
+import { advanceBullet, circleTouchesWorld, circlesOverlap, moveCircle, preventCircleOverlap } from './game-physics.mjs';
 import { createMaze } from './maze.mjs';
 
 const WIDTH=600,HEIGHT=400,WALLS=[{x:290,y:40,w:20,h:320}];
@@ -39,4 +39,15 @@ test('both tanks spawn clear of walls and can leave their starting cell in 1000 
       assert.equal(canLeave,true,`spawn has no traversable exit in maze ${iteration}`);
     }
   }
+});
+
+test('tanks cannot move through each other',()=>{
+  const radius=48,current=[{x:200,y:200},{x:300,y:200}];
+  const headOn=preventCircleOverlap(current,[{x:208,y:200},{x:292,y:200}],radius);
+  assert.equal(circlesOverlap(headOn[0],headOn[1],radius),false);
+  assert.deepEqual(headOn,current);
+
+  const parallel=preventCircleOverlap(current,[{x:200,y:208},{x:300,y:208}],radius);
+  assert.equal(circlesOverlap(parallel[0],parallel[1],radius),false);
+  assert.deepEqual(parallel,[{x:200,y:208},{x:300,y:208}]);
 });

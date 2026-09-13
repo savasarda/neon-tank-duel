@@ -22,6 +22,22 @@ export function moveCircle(walls, x, y, dx, dy, radius, width, height) {
   return { x: nextX, y: nextY };
 }
 
+export function circlesOverlap(first, second, radius) {
+  return (first.x - second.x) ** 2 + (first.y - second.y) ** 2 < (radius * 2) ** 2;
+}
+
+export function preventCircleOverlap(current, proposed, radius) {
+  if (!circlesOverlap(proposed[0], proposed[1], radius)) return proposed;
+
+  const firstOnly = [proposed[0], current[1]];
+  const secondOnly = [current[0], proposed[1]];
+  const firstIsSafe = !circlesOverlap(firstOnly[0], firstOnly[1], radius);
+  const secondIsSafe = !circlesOverlap(secondOnly[0], secondOnly[1], radius);
+  if (firstIsSafe && !secondIsSafe) return firstOnly;
+  if (secondIsSafe && !firstIsSafe) return secondOnly;
+  return current.map(position => ({ ...position }));
+}
+
 export function advanceBullet(bullet, walls, radius, width, height) {
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(bullet.vx), Math.abs(bullet.vy)) * 2));
   const stepX = bullet.vx / steps, stepY = bullet.vy / steps;
