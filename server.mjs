@@ -10,6 +10,7 @@ const POWER_TYPES=['speed','double','shield','mine','rocket','invisible','range'
 const ARENA_THEMES=['neon','desert','ice','space'];
 const PLAYER_COLORS=['#17e6ff','#ff3fb4','#ffe04b','#71ff6b'];
 const MAP_LAYOUTS={classic:{cols:8,rows:6,extraOpenings:4},narrow:{cols:10,rows:7,extraOpenings:2},open:{cols:6,rows:4,extraOpenings:10},corners:{cols:8,rows:6,extraOpenings:0}};
+const REACTIONS=['😄','😎','😱','🔥','💥','👋'];
 const app=express();app.use(express.static('dist'));
 const http=createServer(app);const io=new Server(http,{cors:{origin:true}});const rooms=new Map();
 
@@ -18,13 +19,13 @@ function arenaFor(layout){return createMaze(W,H,WALL,MAP_LAYOUTS[layout]||MAP_LA
 function freshEffects(){return{speedUntil:0,doubleUntil:0,shieldUntil:0,invisibleUntil:0,rangeUntil:0,mines:0,rockets:0,pierces:0}}
 function placePlayer(player,spawn,angle){Object.assign(player,{x:spawn.x,y:spawn.y,a:angle,turret:angle,cooldown:0,input:{},effects:freshEffects()})}
 function newRound(room){
-  const arena=arenaFor(room.mapLayout);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.trails=[];room.mines=[];room.powerups=[];
+  const arena=arenaFor(room.mapLayout);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.trails=[];room.mines=[];room.powerups=[];room.reactions=[];
   const choices=ARENA_THEMES.filter(theme=>theme!==room.theme);room.theme=choices[Math.floor(Math.random()*choices.length)];room.roundId=(room.roundId||0)+1;room.explosion=null;
   room.phase='countdown';room.countdown=3;room.roundStartsAt=Date.now()+3000;room.nextPowerupAt=room.roundStartsAt+4000;
   room.players.forEach((player,index)=>{const spawn=arena.spawns[index],angle=Math.atan2(H/2-spawn.y,W/2-spawn.x);placePlayer(player,spawn,angle)});
 }
 function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,range:player.effects.rangeUntil>now,mines:player.effects.mines,rockets:player.effects.rockets,pierces:player.effects.pierces}}}
-function snapshot(room){const now=Date.now();return{code:room.code,maxPlayers:room.maxPlayers,mapLayout:room.mapLayout,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,walls:room.walls,mines:room.mines,powerups:room.powerups,winner:room.winner}}
+function snapshot(room){const now=Date.now();return{code:room.code,maxPlayers:room.maxPlayers,mapLayout:room.mapLayout,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,walls:room.walls,mines:room.mines,powerups:room.powerups,reactions:room.reactions,winner:room.winner}}
 function startIfReady(room){if(room.players.length===room.maxPlayers&&room.players.every(player=>player.ready)){newRound(room);broadcast(room)}}
 function broadcast(room,event='game-state'){io.to(room.code).emit(event,snapshot(room))}
 function endRound(room,winner,loser){if(room.phase!=='playing')return;const target=room.players[loser];room.explosion={x:target.x,y:target.y,color:PLAYER_COLORS[loser],at:Date.now()};room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000)}
@@ -94,6 +95,7 @@ function tick(room){
   }
 
   room.trails=room.trails.filter(trail=>--trail.life>0);
+  room.reactions=room.reactions.filter(reaction=>--reaction.life>0);
   for(const bullet of room.bullets){
     const oldVx=bullet.vx,oldVy=bullet.vy,radius=bullet.radius||BULLET_R,bounced=bullet.type==='pierce'?advancePiercingBullet(bullet,radius,W,H):advanceBullet(bullet,room.walls,radius,W,H);bullet.life--;bullet.bounces+=bounced?1:0;
     if(bounced){const speed=Math.hypot(oldVx,oldVy)||1;room.trails.push({x1:bullet.x-oldVx/speed*52,y1:bullet.y-oldVy/speed*52,x2:bullet.x,y2:bullet.y,x3:bullet.x+bullet.vx/speed*52,y3:bullet.y+bullet.vy/speed*52,owner:bullet.owner,life:18})}
@@ -107,10 +109,11 @@ function tick(room){
 }
 
 io.on('connection',socket=>{
-  socket.on('create-room',({speed,players,layout}={})=>{const code=roomCode(),maxPlayers=clamp(Math.round(Number(players)||2),2,4),mapLayout=MAP_LAYOUTS[layout]?layout:'classic',tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=arenaFor(mapLayout),room={code,maxPlayers,mapLayout,tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,ready:false,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)})});
-  socket.on('create-bot-game',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=arenaFor('classic'),room={code,maxPlayers:2,mapLayout:'classic',tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,ready:true,score:0,effects:freshEffects()},{id:`bot-${code}`,isBot:true,ready:true,score:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};newRound(room);rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)});broadcast(room)});
+  socket.on('create-room',({speed,players,layout}={})=>{const code=roomCode(),maxPlayers=clamp(Math.round(Number(players)||2),2,4),mapLayout=MAP_LAYOUTS[layout]?layout:'classic',tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=arenaFor(mapLayout),room={code,maxPlayers,mapLayout,tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,ready:false,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],reactions:[],phase:'waiting'};rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)})});
+  socket.on('create-bot-game',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=arenaFor('classic'),room={code,maxPlayers:2,mapLayout:'classic',tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,ready:true,score:0,effects:freshEffects()},{id:`bot-${code}`,isBot:true,ready:true,score:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],reactions:[],phase:'waiting'};newRound(room);rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)});broadcast(room)});
   socket.on('join-room',raw=>{const code=String(raw||'').toUpperCase(),room=rooms.get(code);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=room.maxPlayers)return socket.emit('room-error','Bu oda dolu.');const slot=room.players.length,spawn=room.spawns[slot];room.players.push({id:socket.id,ready:false,x:spawn.x,y:spawn.y,a:0,turret:0,score:0,input:{},cooldown:0,effects:freshEffects()});socket.join(code);socket.emit('room-joined',{code,slot,state:snapshot(room)});broadcast(room)});
   socket.on('set-ready',({code,ready})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(!player||room.phase!=='waiting')return;player.ready=Boolean(ready);broadcast(room);startIfReady(room)});
+  socket.on('reaction',({code,emoji})=>{const room=rooms.get(code),owner=room?.players.findIndex(item=>item.id===socket.id),player=room?.players[owner],now=Date.now();if(!player||room.phase!=='playing'||!REACTIONS.includes(emoji)||now-(player.lastReaction||0)<850)return;player.lastReaction=now;room.reactions.push({owner,emoji,x:player.x,y:player.y-74,life:105});broadcast(room)});
   socket.on('player-input',({code,input})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(player&&room.phase==='playing')player.input={move:clamp(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):player.a}});
   socket.on('fire',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id);if(!room||owner<0||room.phase!=='playing')return;if(fireForPlayer(room,owner))broadcast(room)});
   socket.on('deploy-mine',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id),player=room?.players[owner];if(!player||room.phase!=='playing'||player.effects.mines<=0)return;const behind={x:player.x-Math.cos(player.a)*52,y:player.y-Math.sin(player.a)*52},position=circleTouchesWorld(room.walls,behind.x,behind.y,22,W,H)?player:behind;player.effects.mines--;room.mines.push({x:position.x,y:position.y,owner,armed:45,life:900});broadcast(room)});
