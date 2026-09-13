@@ -7,6 +7,7 @@ import { createMaze } from './maze.mjs';
 const W=1400,H=1000,TANK_R=40,COLLISION_R=48,BULLET_R=16,WIN_SCORE=5,WALL=16,MAX_BULLETS=5;
 const SPEEDS={slow:3.3,normal:4.6,fast:6.1};
 const POWER_TYPES=['speed','double','shield','mine','rocket','invisible'];
+const ARENA_THEMES=['neon','desert','ice','space'];
 const app=express();app.use(express.static('dist'));
 const http=createServer(app);const io=new Server(http,{cors:{origin:true}});const rooms=new Map();
 
@@ -15,13 +16,14 @@ function freshEffects(){return{speedUntil:0,doubleUntil:0,shieldUntil:0,invisibl
 function placePlayer(player,spawn,angle){Object.assign(player,{x:spawn.x,y:spawn.y,a:angle,turret:angle,cooldown:0,input:{},effects:freshEffects()})}
 function newRound(room){
   const arena=createMaze(W,H,WALL);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.trails=[];room.mines=[];room.powerups=[];
+  const choices=ARENA_THEMES.filter(theme=>theme!==room.theme);room.theme=choices[Math.floor(Math.random()*choices.length)];room.roundId=(room.roundId||0)+1;room.explosion=null;
   room.phase='countdown';room.countdown=3;room.roundStartsAt=Date.now()+3000;room.nextPowerupAt=room.roundStartsAt+4000;
   placePlayer(room.players[0],arena.spawns[0],Math.PI/4);placePlayer(room.players[1],arena.spawns[1],-3*Math.PI/4);
 }
-function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,mines:player.effects.mines,rockets:player.effects.rockets}}}
-function snapshot(room){const now=Date.now();return{code:room.code,phase:room.phase,countdown:room.countdown,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,walls:room.walls,mines:room.mines,powerups:room.powerups,winner:room.winner}}
+function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,mines:player.effects.mines,rockets:player.effects.rockets}}}
+function snapshot(room){const now=Date.now();return{code:room.code,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,walls:room.walls,mines:room.mines,powerups:room.powerups,winner:room.winner}}
 function broadcast(room,event='game-state'){io.to(room.code).emit(event,snapshot(room))}
-function endRound(room,winner){if(room.phase!=='playing')return;room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000)}
+function endRound(room,winner){if(room.phase!=='playing')return;const loser=winner===0?1:0,target=room.players[loser];room.explosion={x:target.x,y:target.y,color:loser===0?'#17e6ff':'#ff3fb4',at:Date.now()};room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000)}
 
 function spawnPowerup(room){
   for(let attempt=0;attempt<100;attempt++){
@@ -75,7 +77,7 @@ function tick(room){
 }
 
 io.on('connection',socket=>{
-  socket.on('create-room',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=createMaze(W,H,WALL),room={code,tankSpeed,spawns:arena.spawns,players:[{id:socket.id,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)})});
+  socket.on('create-room',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=createMaze(W,H,WALL),room={code,tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)})});
   socket.on('join-room',raw=>{const code=String(raw||'').toUpperCase(),room=rooms.get(code);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=2)return socket.emit('room-error','Bu oda dolu.');room.players.push({id:socket.id,x:room.spawns[1].x,y:room.spawns[1].y,a:-2.36,turret:-2.36,score:0,input:{},cooldown:0,effects:freshEffects()});socket.join(code);newRound(room);socket.emit('room-joined',{code,slot:1,state:snapshot(room)});broadcast(room)});
   socket.on('player-input',({code,input})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(player&&room.phase==='playing')player.input={move:clamp(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):player.a}});
   socket.on('fire',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id),player=room?.players[owner];if(!player||room.phase!=='playing'||player.cooldown>0)return;const active=room.bullets.filter(bullet=>bullet.owner===owner).length,available=MAX_BULLETS-active;if(available<=0)return;player.cooldown=28;player.turret=player.a;if(player.effects.rockets>0){player.effects.rockets--;addBullet(room,owner,player.a,'rocket')}else if(player.effects.doubleUntil>Date.now()&&available>=2){addBullet(room,owner,player.a-.09);addBullet(room,owner,player.a+.09)}else addBullet(room,owner,player.a);broadcast(room)});
