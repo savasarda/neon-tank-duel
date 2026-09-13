@@ -5,7 +5,7 @@ import { advanceBullet, circleTouchesWorld, clamp, moveCircle, preventCircleOver
 import { createMaze } from './maze.mjs';
 
 const W=1400,H=1000,TANK_R=40,COLLISION_R=48,BULLET_R=16,WIN_SCORE=5,WALL=16,MAX_BULLETS=5;
-const SPEEDS={slow:3.3,normal:4.6,fast:6.1};
+const SPEEDS={slow:5.4,normal:7.1,fast:8.8};
 const POWER_TYPES=['speed','double','shield','mine','rocket','invisible'];
 const ARENA_THEMES=['neon','desert','ice','space'];
 const app=express();app.use(express.static('dist'));
@@ -55,7 +55,7 @@ function tick(room){
   if(now>=room.nextPowerupAt&&room.powerups.length<2){spawnPowerup(room);room.nextPowerupAt=now+8000}
 
   const current=room.players.map(player=>({x:player.x,y:player.y}));
-  const proposed=room.players.map(player=>{player.cooldown=Math.max(0,player.cooldown-1);const input=player.input||{};if(Number.isFinite(input.heading))player.a=input.heading;player.turret=player.a;const boost=player.effects.speedUntil>now?1.55:1;const speed=clamp(input.move||0,0,1)*room.tankSpeed/2*boost;return moveCircle(room.walls,player.x,player.y,Math.cos(player.a)*speed,Math.sin(player.a)*speed,COLLISION_R,W,H)});
+  const proposed=room.players.map(player=>{player.cooldown=Math.max(0,player.cooldown-1);const input=player.input||{};if(Number.isFinite(input.heading))player.a=input.heading;player.turret=player.a;const boost=player.effects.speedUntil>now?1.7:1;const speed=clamp(input.move||0,0,1)*room.tankSpeed/2*boost;return moveCircle(room.walls,player.x,player.y,Math.cos(player.a)*speed,Math.sin(player.a)*speed,COLLISION_R,W,H)});
   const positions=preventCircleOverlap(current,proposed,COLLISION_R);room.players.forEach((player,index)=>Object.assign(player,positions[index]));
 
   for(let playerIndex=0;playerIndex<room.players.length;playerIndex++){
