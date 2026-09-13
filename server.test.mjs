@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { advanceBullet, circleTouchesWorld, moveCircle } from './game-physics.mjs';
+import { createMaze } from './maze.mjs';
 
 const WIDTH=600,HEIGHT=400,WALLS=[{x:290,y:40,w:20,h:320}];
 
@@ -21,4 +22,21 @@ test('bullet always reflects before entering a vertical wall',()=>{
 test('bullet cannot escape through a joined wall corner',()=>{
   const corner=[{x:290,y:40,w:20,h:180},{x:290,y:200,w:180,h:20}];const b={x:200,y:110,vx:14,vy:14};
   for(let i=0;i<240;i++){advanceBullet(b,corner,8,WIDTH,HEIGHT);assert.equal(circleTouchesWorld(corner,b.x,b.y,8,WIDTH,HEIGHT),false)}
+});
+
+test('both tanks spawn clear of walls and can leave their starting cell in 1000 random mazes',()=>{
+  const width=1400,height=1000,wallThickness=16,tankRadius=48;
+  const directions=[[1,0],[-1,0],[0,1],[0,-1]];
+  for(let iteration=0;iteration<1000;iteration++){
+    const {walls,spawns}=createMaze(width,height,wallThickness);
+    for(const spawn of spawns){
+      assert.equal(circleTouchesWorld(walls,spawn.x,spawn.y,tankRadius,width,height),false,`spawn intersects a wall in maze ${iteration}`);
+      const canLeave=directions.some(([dx,dy])=>{
+        let position={...spawn};
+        for(let step=0;step<80;step++)position=moveCircle(walls,position.x,position.y,dx*3,dy*3,tankRadius,width,height);
+        return Math.hypot(position.x-spawn.x,position.y-spawn.y)>60;
+      });
+      assert.equal(canLeave,true,`spawn has no traversable exit in maze ${iteration}`);
+    }
+  }
 });

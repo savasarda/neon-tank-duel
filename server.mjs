@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { advanceBullet, clamp as clamps, moveCircle } from './game-physics.mjs';
+import { createMaze } from './maze.mjs';
 
 const W = 1400, H = 1000, TANK_R = 40, BULLET_R = 16, WIN_SCORE = 5, WALL = 16;
 const SPEEDS = { slow: 3.3, normal: 4.6, fast: 6.1 };
@@ -9,23 +10,8 @@ const app = express(); app.use(express.static('dist'));
 const http = createServer(app); const io = new Server(http, { cors: { origin: true } });
 const rooms = new Map();
 function code(){ let c; do c=Math.random().toString(36).slice(2,6).toUpperCase(); while(rooms.has(c)); return c }
-function maze() { // Uçları birleşen, gerçek koridor labirenti
-  const cols=8,rows=6,margin=40,cw=(W-margin*2)/cols,ch=(H-margin*2)/rows;
-  const cells=Array.from({length:rows},()=>Array.from({length:cols},()=>({seen:false,right:true,bottom:true})));
-  const stack=[[0,0]];cells[0][0].seen=true;
-  while(stack.length){const [x,y]=stack.at(-1);const options=[];
-    if(x>0&&!cells[y][x-1].seen)options.push([x-1,y,'left']);if(x<cols-1&&!cells[y][x+1].seen)options.push([x+1,y,'right']);if(y>0&&!cells[y-1][x].seen)options.push([x,y-1,'up']);if(y<rows-1&&!cells[y+1][x].seen)options.push([x,y+1,'down']);
-    if(!options.length){stack.pop();continue}const [nx,ny,dir]=options[Math.floor(Math.random()*options.length)];
-    if(dir==='right')cells[y][x].right=false;if(dir==='left')cells[ny][nx].right=false;if(dir==='down')cells[y][x].bottom=false;if(dir==='up')cells[ny][nx].bottom=false;cells[ny][nx].seen=true;stack.push([nx,ny]);
-  }
-  for(let i=0;i<4;i++){const x=Math.floor(Math.random()*cols),y=Math.floor(Math.random()*rows);if(Math.random()>.5&&x<cols-1)cells[y][x].right=false;else if(y<rows-1)cells[y][x].bottom=false}
-  const walls=[];
-  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const c=cells[y][x];if(c.right)walls.push({x:margin+(x+1)*cw-WALL/2,y:margin+y*ch,w:WALL,h:ch+WALL});if(c.bottom)walls.push({x:margin+x*cw,y:margin+(y+1)*ch-WALL/2,w:cw+WALL,h:WALL});}
-  // Aynı çizgi üzerindeki bitişik duvarları birleştir: uzun, temiz koridorlar oluşur.
-  for(let i=0;i<walls.length;i++)for(let j=walls.length-1;j>i;j--){const a=walls[i],b=walls[j];if(a.w===b.w&&a.x===b.x&&a.y<=b.y+b.h&&b.y<=a.y+a.h){const top=Math.min(a.y,b.y),bottom=Math.max(a.y+a.h,b.y+b.h);a.y=top;a.h=bottom-top;walls.splice(j,1)}else if(a.h===b.h&&a.y===b.y&&a.x<=b.x+b.w&&b.x<=a.x+a.w){const left=Math.min(a.x,b.x),right=Math.max(a.x+a.w,b.x+b.w);a.x=left;a.w=right-left;walls.splice(j,1)}}
-  return walls;
-}
-function newRound(room){ room.walls=maze(); room.bullets=[]; room.phase='playing'; room.players[0].x=150;room.players[0].y=150;room.players[0].a=Math.PI/4;room.players[0].turret=Math.PI/4;room.players[1].x=1250;room.players[1].y=850;room.players[1].a=-3*Math.PI/4;room.players[1].turret=-3*Math.PI/4; room.players.forEach(p=>p.cooldown=0); }
+function placePlayer(player, spawn, angle){ player.x=spawn.x;player.y=spawn.y;player.a=angle;player.turret=angle;player.cooldown=0;player.input={}; }
+function newRound(room){ const arena=createMaze(W,H,WALL);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.phase='playing';placePlayer(room.players[0],arena.spawns[0],Math.PI/4);placePlayer(room.players[1],arena.spawns[1],-3*Math.PI/4); }
 function snapshot(room){ return { code:room.code, phase:room.phase, players:room.players.map(({id,input,cooldown,...p})=>p), bullets:room.bullets, walls:room.walls, winner:room.winner }; }
 function broadcast(room,event='game-state'){ io.to(room.code).emit(event,snapshot(room)); }
 function endRound(room,winner){ if(room.phase!=='playing')return; room.players[winner].score++; room.phase='result';room.winner=winner; broadcast(room,'round-result'); if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return} setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000); }
@@ -33,8 +19,8 @@ function tick(room){ if(room.phase!=='playing')return; for(const p of room.playe
  for(const b of room.bullets){const bounced=advanceBullet(b,room.walls,BULLET_R,W,H);b.life--;b.bounces+=bounced?1:0; const hit=room.players.findIndex((p,j)=>j!==b.owner&&(p.x-b.x)**2+(p.y-b.y)**2<(TANK_R+BULLET_R)**2);if(hit>=0){endRound(room,b.owner);return;}}
  room.bullets=room.bullets.filter(b=>b.life>0&&b.bounces<=6); broadcast(room); }
 io.on('connection', socket=>{
- socket.on('create-room',({speed}={})=>{const c=code(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,room={code:c,tankSpeed,players:[{id:socket.id,x:150,y:150,a:.78,turret:.78,score:0,input:{},cooldown:0}],walls:maze(),bullets:[],phase:'waiting'};rooms.set(c,room);socket.join(c);socket.emit('room-joined',{code:c,slot:0,state:snapshot(room)});});
- socket.on('join-room', raw=>{const c=String(raw||'').toUpperCase(),room=rooms.get(c);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=2)return socket.emit('room-error','Bu oda dolu.');room.players.push({id:socket.id,x:1250,y:850,a:-2.36,turret:-2.36,score:0,input:{},cooldown:0});socket.join(c);newRound(room);socket.emit('room-joined',{code:c,slot:1,state:snapshot(room)});broadcast(room);});
+ socket.on('create-room',({speed}={})=>{const c=code(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=createMaze(W,H,WALL),room={code:c,tankSpeed,spawns:arena.spawns,players:[{id:socket.id,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0}],walls:arena.walls,bullets:[],phase:'waiting'};rooms.set(c,room);socket.join(c);socket.emit('room-joined',{code:c,slot:0,state:snapshot(room)});});
+ socket.on('join-room', raw=>{const c=String(raw||'').toUpperCase(),room=rooms.get(c);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=2)return socket.emit('room-error','Bu oda dolu.');room.players.push({id:socket.id,x:room.spawns[1].x,y:room.spawns[1].y,a:-2.36,turret:-2.36,score:0,input:{},cooldown:0});socket.join(c);newRound(room);socket.emit('room-joined',{code:c,slot:1,state:snapshot(room)});broadcast(room);});
  socket.on('player-input',({code: c,input})=>{const r=rooms.get(c);const p=r?.players.find(p=>p.id===socket.id);if(p&&r.phase==='playing')p.input={move:clamps(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):p.a};});
  socket.on('fire',({code:c})=>{const r=rooms.get(c),idx=r?.players.findIndex(p=>p.id===socket.id),p=r?.players[idx];if(!p||r.phase!=='playing'||p.cooldown>0||r.bullets.filter(b=>b.owner===idx).length>=5)return;const a=p.a;p.turret=a;p.cooldown=28;r.bullets.push({x:p.x+Math.cos(a)*54,y:p.y+Math.sin(a)*54,vx:Math.cos(a)*5.5,vy:Math.sin(a)*5.5,life:230,bounces:0,owner:idx});broadcast(r);});
  socket.on('leave-room',({code:c})=>{const r=rooms.get(c);if(!r||!r.players.some(p=>p.id===socket.id))return;socket.leave(c);if(r.players.length===1){rooms.delete(c);return}r.phase='disconnected';broadcast(r,'player-disconnected');setTimeout(()=>{if(rooms.get(r.code)===r)rooms.delete(r.code)},10000);});
