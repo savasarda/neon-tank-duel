@@ -20,6 +20,7 @@ const THEMES:Record<string,{name:string;floor:string;accent:string;wall:string;b
   ice:{name:'BUZ GEÇİDİ',floor:'#061825',accent:'#164b65',wall:'#70bdd5',border:'#c5f7ff'},
   space:{name:'UZAY İSTASYONU',floor:'#03030c',accent:'#251848',wall:'#6550a4',border:'#bd93ff'},
 };
+let arenaCache:{key:string;canvas:HTMLCanvasElement}|undefined;
 
 function drawBackground(ctx:CanvasRenderingContext2D,theme:string,time:number){
   const style=THEMES[theme]??THEMES.neon;ctx.fillStyle=style.floor;ctx.fillRect(0,0,W,H);ctx.save();ctx.globalAlpha=.26;ctx.strokeStyle=style.accent;ctx.fillStyle=style.accent;
@@ -27,6 +28,14 @@ function drawBackground(ctx:CanvasRenderingContext2D,theme:string,time:number){
   else if(theme==='desert'){for(let i=0;i<70;i++){const x=(i*227)%W,y=(i*131)%H;ctx.beginPath();ctx.arc(x,y,2+(i%4),0,Math.PI*2);ctx.fill()}}
   else if(theme==='ice'){ctx.lineWidth=2;for(let i=0;i<16;i++){const x=(i*173)%W,y=(i*239)%H;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+35,y+22);ctx.lineTo(x+18,y+55);ctx.stroke()}}
   else{ctx.lineWidth=1;for(let x=0;x<W;x+=80){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}for(let y=0;y<H;y+=80){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}ctx.globalAlpha=.12+.05*Math.sin(time/500)}ctx.restore();
+}
+
+function arenaLayer(state:State){
+  const theme=state.theme??'neon',key=`${state.code}-${state.roundId??0}-${theme}-${state.walls.length}`;
+  if(arenaCache?.key===key)return arenaCache.canvas;
+  const canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const context=canvas.getContext('2d')!,style=THEMES[theme]??THEMES.neon;
+  drawBackground(context,theme,0);context.fillStyle=style.wall;context.shadowColor=style.border;context.shadowBlur=12;state.walls.forEach(wall=>context.fillRect(wall.x,wall.y,wall.w,wall.h));context.shadowBlur=0;context.strokeStyle=style.border;context.lineWidth=8;context.strokeRect(4,4,W-8,H-8);
+  arenaCache={key,canvas};return canvas;
 }
 
 function drawTank(ctx:CanvasRenderingContext2D,player:Player,index:number,slot:number,time:number,hide:boolean){
@@ -42,8 +51,7 @@ function drawExplosion(ctx:CanvasRenderingContext2D,explosion:Explosion|undefine
 }
 
 function draw(ctx:CanvasRenderingContext2D,state:State,slot:number,time:number,transitionAge:number){
-  const canvas=ctx.canvas,scale=Math.min(canvas.width/W,canvas.height/H),theme=state.theme??'neon',style=THEMES[theme]??THEMES.neon;ctx.setTransform(scale,0,0,scale,(canvas.width-W*scale)/2,(canvas.height-H*scale)/2);ctx.clearRect(0,0,W,H);drawBackground(ctx,theme,time);
-  ctx.fillStyle=style.wall;ctx.shadowColor=style.border;ctx.shadowBlur=12;state.walls.forEach(wall=>ctx.fillRect(wall.x,wall.y,wall.w,wall.h));ctx.shadowBlur=0;ctx.strokeStyle=style.border;ctx.lineWidth=8;ctx.strokeRect(4,4,W-8,H-8);
+  const canvas=ctx.canvas,scale=Math.min(canvas.width/W,canvas.height/H),theme=state.theme??'neon',style=THEMES[theme]??THEMES.neon;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);ctx.setTransform(scale,0,0,scale,(canvas.width-W*scale)/2,(canvas.height-H*scale)/2);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(arenaLayer(state),0,0);
   (state.powerups??[]).forEach(power=>{const powerStyle=POWER_STYLE[power.type]??{label:'?',color:'#fff'},pulse=1+Math.sin(time/180)*.12;ctx.save();ctx.translate(power.x,power.y);ctx.scale(pulse,pulse);ctx.fillStyle='#081020';ctx.strokeStyle=powerStyle.color;ctx.shadowColor=powerStyle.color;ctx.shadowBlur=22;ctx.lineWidth=5;ctx.beginPath();ctx.arc(0,0,24,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.fillStyle=powerStyle.color;ctx.font='700 25px Rajdhani';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(powerStyle.label,0,2);ctx.restore()});
   (state.mines??[]).forEach(mine=>{const color=mine.owner===0?'#17e6ff':'#ff3fb4';ctx.save();ctx.translate(mine.x,mine.y);ctx.fillStyle='#090b12';ctx.strokeStyle=color;ctx.lineWidth=4;ctx.shadowColor=color;ctx.shadowBlur=mine.armed<=0?15:4;ctx.beginPath();for(let i=0;i<8;i++){const angle=i*Math.PI/4,r=i%2?12:22,x=Math.cos(angle)*r,y=Math.sin(angle)*r;i?ctx.lineTo(x,y):ctx.moveTo(x,y)}ctx.closePath();ctx.fill();ctx.stroke();ctx.restore()});
   (state.trails??[]).forEach(trail=>{const color=trail.owner===0?'#17e6ff':'#ff3fb4';ctx.save();ctx.globalAlpha=Math.min(1,trail.life/10);ctx.strokeStyle=color;ctx.shadowColor=color;ctx.shadowBlur=15;ctx.lineWidth=5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(trail.x1,trail.y1);ctx.lineTo(trail.x2,trail.y2);ctx.lineTo(trail.x3,trail.y3);ctx.stroke();for(let i=0;i<9;i++){const angle=i*2.4+trail.life*.2,distance=(18-trail.life)*2+i*3;ctx.fillStyle=i%2?'#fff':color;ctx.beginPath();ctx.arc(trail.x2+Math.cos(angle)*distance,trail.y2+Math.sin(angle)*distance,2+i%3,0,Math.PI*2);ctx.fill()}ctx.restore()});
@@ -61,7 +69,7 @@ function App(){
   useEffect(()=>{const connection=io();setSocket(connection);connection.on('room-joined',(data:{code:string;slot:number;state:State})=>{setCode(data.code);setSlot(data.slot);setState(data.state);setErr('')});connection.on('game-state',setState);connection.on('round-result',setState);connection.on('match-result',setState);connection.on('player-disconnected',()=>setErr('Rakibin bağlantısı kesildi. Oda kısa süre içinde kapanacak.'));connection.on('room-error',setErr);return()=>{connection.close()}},[]);
   connectedToGame.current=Boolean(state&&slot!==undefined);
   useEffect(()=>{if(!socket||slot===undefined||!code)return;const timer=setInterval(()=>{if(connectedToGame.current)socket.emit('player-input',{code,input:controls.current})},1000/60);return()=>clearInterval(timer)},[slot,socket,code]);
-  useEffect(()=>{const element=canvas.current;if(!element||slot===undefined)return;const context=element.getContext('2d')!;let frame=0;const resize=()=>{element.width=element.clientWidth*devicePixelRatio;element.height=element.clientHeight*devicePixelRatio};const animate=()=>{const current=latestState.current,now=Date.now();if(current){if(lastRound.current!==current.roundId){lastRound.current=current.roundId;transitionStart.current=now}draw(context,current,slot,now,now-transitionStart.current)}frame=requestAnimationFrame(animate)};resize();animate();window.addEventListener('resize',resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener('resize',resize)}},[slot,code]);
+  useEffect(()=>{const element=canvas.current;if(!element||slot===undefined)return;const context=element.getContext('2d')!;let frame=0;const resize=()=>{const pixelRatio=Math.min(devicePixelRatio,innerWidth<1000?2:2.5);element.width=Math.round(element.clientWidth*pixelRatio);element.height=Math.round(element.clientHeight*pixelRatio)};const animate=()=>{const current=latestState.current,now=Date.now();if(current){if(lastRound.current!==current.roundId){lastRound.current=current.roundId;transitionStart.current=now}draw(context,current,slot,now,now-transitionStart.current)}frame=requestAnimationFrame(animate)};resize();animate();window.addEventListener('resize',resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener('resize',resize)}},[slot,code]);
   const share=async()=>{const text=`Neon Tank Düellosu odama katıl: ${code}`;if(navigator.share)await navigator.share({title:'Neon Tank Düellosu',text});else await navigator.clipboard.writeText(code)};
   const pointer=(event:React.PointerEvent<HTMLDivElement>)=>{const box=event.currentTarget.getBoundingClientRect(),rawX=(event.clientX-box.left)/box.width-.5,rawY=(event.clientY-box.top)/box.height-.5,length=Math.hypot(rawX,rawY),factor=length>.5?.5/length:1,x=rawX*factor,y=rawY*factor,power=Math.min(1,Math.hypot(x,y)*2);controls.current={move:power,heading:power>.05?Math.atan2(y,x):controls.current.heading};setDrive({x:x*2,y:y*2})};
   const release=()=>{controls.current={...controls.current,move:0};setDrive({x:0,y:0})};
