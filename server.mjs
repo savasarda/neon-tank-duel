@@ -9,20 +9,18 @@ const http = createServer(app); const io = new Server(http, { cors: { origin: tr
 const rooms = new Map();
 const clamps=(v,a,b)=>Math.max(a,Math.min(b,v));
 function code(){ let c; do c=Math.random().toString(36).slice(2,6).toUpperCase(); while(rooms.has(c)); return c }
-function maze() { // Tank Trouble tarzı: ince, açık koridor duvarları
-  const walls=[], spawns=[{x:150,y:150},{x:1250,y:850}];
-  let attempts=0;
-  while(walls.length<19&&attempts++<180){
-    const vertical=Math.random()>.48;
-    const length=140+Math.floor(Math.random()*190);
-    const w=vertical?WALL:length,h=vertical?length:WALL;
-    const x=70+Math.floor(Math.random()*(W-w-140));
-    const y=70+Math.floor(Math.random()*(H-h-140));
-    const candidate={x,y,w,h};
-    if(spawns.some(s=>collides(s.x,s.y,105,candidate)))continue;
-    if(walls.some(existing=>x<existing.x+existing.w+34&&x+w+34>existing.x&&y<existing.y+existing.h+34&&y+h+34>existing.y))continue;
-    walls.push(candidate);
+function maze() { // Uçları birleşen, gerçek koridor labirenti
+  const cols=7,rows=5,margin=40,cw=(W-margin*2)/cols,ch=(H-margin*2)/rows;
+  const cells=Array.from({length:rows},()=>Array.from({length:cols},()=>({seen:false,right:true,bottom:true})));
+  const stack=[[0,0]];cells[0][0].seen=true;
+  while(stack.length){const [x,y]=stack.at(-1);const options=[];
+    if(x>0&&!cells[y][x-1].seen)options.push([x-1,y,'left']);if(x<cols-1&&!cells[y][x+1].seen)options.push([x+1,y,'right']);if(y>0&&!cells[y-1][x].seen)options.push([x,y-1,'up']);if(y<rows-1&&!cells[y+1][x].seen)options.push([x,y+1,'down']);
+    if(!options.length){stack.pop();continue}const [nx,ny,dir]=options[Math.floor(Math.random()*options.length)];
+    if(dir==='right')cells[y][x].right=false;if(dir==='left')cells[ny][nx].right=false;if(dir==='down')cells[y][x].bottom=false;if(dir==='up')cells[ny][nx].bottom=false;cells[ny][nx].seen=true;stack.push([nx,ny]);
   }
+  for(let i=0;i<4;i++){const x=Math.floor(Math.random()*cols),y=Math.floor(Math.random()*rows);if(Math.random()>.5&&x<cols-1)cells[y][x].right=false;else if(y<rows-1)cells[y][x].bottom=false}
+  const walls=[];
+  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const c=cells[y][x];if(c.right)walls.push({x:margin+(x+1)*cw-WALL/2,y:margin+y*ch,w:WALL,h:ch+WALL});if(c.bottom)walls.push({x:margin+x*cw,y:margin+(y+1)*ch-WALL/2,w:cw+WALL,h:WALL});}
   return walls;
 }
 function newRound(room){ room.walls=maze(); room.bullets=[]; room.phase='playing'; room.players[0].x=150;room.players[0].y=150;room.players[0].a=Math.PI/4;room.players[0].turret=Math.PI/4;room.players[1].x=1250;room.players[1].y=850;room.players[1].a=-3*Math.PI/4;room.players[1].turret=-3*Math.PI/4; room.players.forEach(p=>p.cooldown=0); }
@@ -38,7 +36,7 @@ io.on('connection', socket=>{
  socket.on('create-room',({speed}={})=>{const c=code(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,room={code:c,tankSpeed,players:[{id:socket.id,x:150,y:150,a:.78,turret:.78,score:0,input:{},cooldown:0}],walls:maze(),bullets:[],phase:'waiting'};rooms.set(c,room);socket.join(c);socket.emit('room-joined',{code:c,slot:0,state:snapshot(room)});});
  socket.on('join-room', raw=>{const c=String(raw||'').toUpperCase(),room=rooms.get(c);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=2)return socket.emit('room-error','Bu oda dolu.');room.players.push({id:socket.id,x:1250,y:850,a:-2.36,turret:-2.36,score:0,input:{},cooldown:0});socket.join(c);newRound(room);socket.emit('room-joined',{code:c,slot:1,state:snapshot(room)});broadcast(room);});
  socket.on('player-input',({code: c,input})=>{const r=rooms.get(c);const p=r?.players.find(p=>p.id===socket.id);if(p&&r.phase==='playing')p.input={move:clamps(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):p.a};});
- socket.on('fire',({code:c})=>{const r=rooms.get(c),idx=r?.players.findIndex(p=>p.id===socket.id),p=r?.players[idx];if(!p||r.phase!=='playing'||p.cooldown>0||r.bullets.filter(b=>b.owner===idx).length>=5)return;const a=p.a;p.turret=a;p.cooldown=28;r.bullets.push({x:p.x+Math.cos(a)*54,y:p.y+Math.sin(a)*54,vx:Math.cos(a)*5.5,vy:Math.sin(a)*5.5,life:230,bounces:0,owner:idx});});
+ socket.on('fire',({code:c})=>{const r=rooms.get(c),idx=r?.players.findIndex(p=>p.id===socket.id),p=r?.players[idx];if(!p||r.phase!=='playing'||p.cooldown>0||r.bullets.filter(b=>b.owner===idx).length>=5)return;const a=p.a;p.turret=a;p.cooldown=28;r.bullets.push({x:p.x+Math.cos(a)*54,y:p.y+Math.sin(a)*54,vx:Math.cos(a)*5.5,vy:Math.sin(a)*5.5,life:230,bounces:0,owner:idx});broadcast(r);});
  socket.on('leave-room',({code:c})=>{const r=rooms.get(c);if(!r||!r.players.some(p=>p.id===socket.id))return;socket.leave(c);if(r.players.length===1){rooms.delete(c);return}r.phase='disconnected';broadcast(r,'player-disconnected');setTimeout(()=>{if(rooms.get(r.code)===r)rooms.delete(r.code)},10000);});
  socket.on('disconnect',()=>{for(const r of rooms.values()){const i=r.players.findIndex(p=>p.id===socket.id);if(i<0)continue;r.phase='disconnected';broadcast(r,'player-disconnected');setTimeout(()=>{if(rooms.get(r.code)===r)rooms.delete(r.code)},10000)}});
 });
