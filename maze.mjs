@@ -91,6 +91,8 @@ export function createMaze(width, height, wallThickness, random = Math.random) {
     spawns: [
       { x: margin + cellWidth / 2, y: margin + cellHeight / 2 },
       { x: margin + (cols - 0.5) * cellWidth, y: margin + (rows - 0.5) * cellHeight },
+      { x: margin + (cols - 0.5) * cellWidth, y: margin + cellHeight / 2 },
+      { x: margin + cellWidth / 2, y: margin + (rows - 0.5) * cellHeight },
     ],
   };
 }

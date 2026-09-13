@@ -40,6 +40,25 @@ export function preventCircleOverlap(current, proposed, radius) {
   return current.map(position => ({ ...position }));
 }
 
+export function preventMultipleCircleOverlap(current, proposed, radius) {
+  const result = proposed.map(position => ({ ...position }));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let first = 0; first < result.length; first++) {
+      for (let second = first + 1; second < result.length; second++) {
+        if (!circlesOverlap(result[first], result[second], radius)) continue;
+        const firstMoved = result[first].x !== current[first].x || result[first].y !== current[first].y;
+        const secondMoved = result[second].x !== current[second].x || result[second].y !== current[second].y;
+        if (firstMoved) result[first] = { ...current[first] };
+        if (secondMoved) result[second] = { ...current[second] };
+        changed = firstMoved || secondMoved;
+      }
+    }
+  }
+  return result;
+}
+
 export function advanceBullet(bullet, walls, radius, width, height) {
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(bullet.vx), Math.abs(bullet.vy)) * 2));
   const stepX = bullet.vx / steps, stepY = bullet.vy / steps;

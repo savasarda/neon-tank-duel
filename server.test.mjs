@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceBullet, circleTouchesWorld, circlesOverlap, moveCircle, preventCircleOverlap } from './game-physics.mjs';
+import { advanceBullet, circleTouchesWorld, circlesOverlap, moveCircle, preventCircleOverlap, preventMultipleCircleOverlap } from './game-physics.mjs';
 import { createMaze } from './maze.mjs';
 
 const WIDTH=600,HEIGHT=400,WALLS=[{x:290,y:40,w:20,h:320}];
@@ -24,7 +24,7 @@ test('bullet cannot escape through a joined wall corner',()=>{
   for(let i=0;i<240;i++){advanceBullet(b,corner,8,WIDTH,HEIGHT);assert.equal(circleTouchesWorld(corner,b.x,b.y,8,WIDTH,HEIGHT),false)}
 });
 
-test('both tanks spawn clear of walls and can leave their starting cell in 1000 random mazes',()=>{
+test('all four tanks spawn clear of walls and can leave their starting cell in 1000 random mazes',()=>{
   const width=1400,height=1000,wallThickness=16,tankRadius=48;
   const directions=[[1,0],[-1,0],[0,1],[0,-1]];
   for(let iteration=0;iteration<1000;iteration++){
@@ -60,4 +60,11 @@ test('tank slides along a wall when exactly tangent to its edge',()=>{
   assert.equal(moved.x,start.x);
   assert.ok(moved.y>start.y+39,'tank should slide freely along the wall');
   assert.equal(circleTouchesWorld(wall,moved.x,moved.y,radius,600,400),false);
+});
+
+test('four tanks cannot overlap during simultaneous movement',()=>{
+  const radius=48,current=[{x:100,y:100},{x:200,y:100},{x:100,y:200},{x:200,y:200}];
+  const proposed=[{x:120,y:120},{x:180,y:120},{x:120,y:180},{x:180,y:180}];
+  const result=preventMultipleCircleOverlap(current,proposed,radius);
+  for(let first=0;first<result.length;first++)for(let second=first+1;second<result.length;second++)assert.equal(circlesOverlap(result[first],result[second],radius),false);
 });
