@@ -1,0 +1,9 @@
+{
+  "name": "Neon Tank Duel",
+  "short_name": "Tank Duel",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#050816",
+  "theme_color": "#050816"
+}
