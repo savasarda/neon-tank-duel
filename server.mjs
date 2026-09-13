@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 
-const W = 1400, H = 1000, TANK_R = 40, WIN_SCORE = 5, WALL = 16;
+const W = 1400, H = 1000, TANK_R = 40, BULLET_R = 16, WIN_SCORE = 5, WALL = 16;
 const SPEEDS = { slow: 3.3, normal: 4.6, fast: 6.1 };
 const app = express(); app.use(express.static('dist'));
 const http = createServer(app); const io = new Server(http, { cors: { origin: true } });
@@ -29,10 +29,10 @@ function newRound(room){ room.walls=maze(); room.bullets=[]; room.phase='playing
 function snapshot(room){ return { code:room.code, phase:room.phase, players:room.players.map(({id,input,cooldown,...p})=>p), bullets:room.bullets, walls:room.walls, winner:room.winner }; }
 function broadcast(room,event='game-state'){ io.to(room.code).emit(event,snapshot(room)); }
 function collides(x,y,r,w){ const px=clamps(x,w.x,w.x+w.w),py=clamps(y,w.y,w.y); return (x-px)**2+(y-py)**2<r*r; }
-function blocked(room,x,y){return x<TANK_R||y<TANK_R||x>W-TANK_R||y>H-TANK_R||room.walls.some(w=>collides(x,y,TANK_R,w));}
+function blocked(room,x,y){const r=TANK_R+8;return x<r||y<r||x>W-r||y>H-r||room.walls.some(w=>collides(x,y,r,w));}
 function endRound(room,winner){ if(room.phase!=='playing')return; room.players[winner].score++; room.phase='result';room.winner=winner; broadcast(room,'round-result'); if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return} setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000); }
 function tick(room){ if(room.phase!=='playing')return; for(const p of room.players){p.cooldown=Math.max(0,p.cooldown-1);const i=p.input||{}; if(Number.isFinite(i.heading))p.a=i.heading;p.turret=p.a; const speed=clamps(i.move||0,0,1)*room.tankSpeed/2; const nx=p.x+Math.cos(p.a)*speed,ny=p.y+Math.sin(p.a)*speed;if(!blocked(room,nx,ny)){p.x=nx;p.y=ny;} }
- for(const b of room.bullets){let bounced=false;const steps=Math.max(1,Math.ceil(Math.max(Math.abs(b.vx),Math.abs(b.vy))));const dx=b.vx/steps,dy=b.vy/steps;for(let step=0;step<steps;step++){const nx=b.x+dx,ny=b.y+dy;const hitX=nx<7||nx>W-7||room.walls.some(w=>collides(nx,b.y,7,w));const hitY=ny<7||ny>H-7||room.walls.some(w=>collides(b.x,ny,7,w));const hitAny=hitX||hitY||room.walls.some(w=>collides(nx,ny,7,w));if(hitAny){if(hitX||(!hitX&&!hitY)){b.vx*=-1}if(hitY||(!hitX&&!hitY)){b.vy*=-1}bounced=true;break}b.x=nx;b.y=ny;}b.life--;b.bounces+=bounced?1:0; const hit=room.players.findIndex((p,j)=>j!==b.owner&&(p.x-b.x)**2+(p.y-b.y)**2<(TANK_R+7)**2);if(hit>=0){endRound(room,b.owner);return;}}
+ for(const b of room.bullets){let bounced=false;const steps=Math.max(1,Math.ceil(Math.max(Math.abs(b.vx),Math.abs(b.vy))*2));const dx=b.vx/steps,dy=b.vy/steps;for(let step=0;step<steps;step++){const nx=b.x+dx,ny=b.y+dy;const hitX=nx<BULLET_R||nx>W-BULLET_R||room.walls.some(w=>collides(nx,b.y,BULLET_R,w));const hitY=ny<BULLET_R||ny>H-BULLET_R||room.walls.some(w=>collides(b.x,ny,BULLET_R,w));const hitAny=hitX||hitY||room.walls.some(w=>collides(nx,ny,BULLET_R,w));if(hitAny){if(hitX||(!hitX&&!hitY))b.vx*=-1;if(hitY||(!hitX&&!hitY))b.vy*=-1;bounced=true;break}b.x=nx;b.y=ny;}b.life--;b.bounces+=bounced?1:0; const hit=room.players.findIndex((p,j)=>j!==b.owner&&(p.x-b.x)**2+(p.y-b.y)**2<(TANK_R+BULLET_R)**2);if(hit>=0){endRound(room,b.owner);return;}}
  room.bullets=room.bullets.filter(b=>b.life>0&&b.bounces<=6); broadcast(room); }
 io.on('connection', socket=>{
  socket.on('create-room',({speed}={})=>{const c=code(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,room={code:c,tankSpeed,players:[{id:socket.id,x:150,y:150,a:.78,turret:.78,score:0,input:{},cooldown:0}],walls:maze(),bullets:[],phase:'waiting'};rooms.set(c,room);socket.join(c);socket.emit('room-joined',{code:c,slot:0,state:snapshot(room)});});
