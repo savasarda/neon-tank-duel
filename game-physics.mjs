@@ -3,11 +3,13 @@ export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 export function circleTouchesRect(x, y, radius, wall) {
   const closestX = clamp(x, wall.x, wall.x + wall.w);
   const closestY = clamp(y, wall.y, wall.y + wall.h);
-  return (x - closestX) ** 2 + (y - closestY) ** 2 <= radius ** 2;
+  // Yalnızca gerçek örtüşmeyi çarpışma say. Tam teğet konumda tankın
+  // duvar boyunca kayabilmesi gerekir; aksi halde köşelerde kilitlenir.
+  return (x - closestX) ** 2 + (y - closestY) ** 2 < radius ** 2 - 1e-6;
 }
 
 export function circleTouchesWorld(walls, x, y, radius, width, height) {
-  if (x - radius <= 0 || y - radius <= 0 || x + radius >= width || y + radius >= height) return true;
+  if (x - radius < 0 || y - radius < 0 || x + radius > width || y + radius > height) return true;
   return walls.some(wall => circleTouchesRect(x, y, radius, wall));
 }
 

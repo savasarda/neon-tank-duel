@@ -51,3 +51,13 @@ test('tanks cannot move through each other',()=>{
   assert.equal(circlesOverlap(parallel[0],parallel[1],radius),false);
   assert.deepEqual(parallel,[{x:200,y:208},{x:300,y:208}]);
 });
+
+test('tank slides along a wall when exactly tangent to its edge',()=>{
+  const wall=[{x:290,y:40,w:20,h:320}],radius=30;
+  const start={x:290-radius,y:150};
+  assert.equal(circleTouchesWorld(wall,start.x,start.y,radius,600,400),false);
+  const moved=moveCircle(wall,start.x,start.y,0,40,radius,600,400);
+  assert.equal(moved.x,start.x);
+  assert.ok(moved.y>start.y+39,'tank should slide freely along the wall');
+  assert.equal(circleTouchesWorld(wall,moved.x,moved.y,radius,600,400),false);
+});
