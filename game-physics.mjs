@@ -8,12 +8,20 @@ export function circleTouchesRect(x, y, radius, wall) {
   return (x - closestX) ** 2 + (y - closestY) ** 2 < radius ** 2 - 1e-6;
 }
 
+export function sweptWalls(walls, x, y, dx, dy, radius) {
+  const left = Math.min(x, x + dx) - radius, right = Math.max(x, x + dx) + radius;
+  const top = Math.min(y, y + dy) - radius, bottom = Math.max(y, y + dy) + radius;
+  return walls.filter(w => w.x <= right && w.x + w.w >= left && w.y <= bottom && w.y + w.h >= top);
+}
+
 export function circleTouchesWorld(walls, x, y, radius, width, height) {
   if (x - radius < 0 || y - radius < 0 || x + radius > width || y + radius > height) return true;
   return walls.some(wall => circleTouchesRect(x, y, radius, wall));
 }
 
 export function moveCircle(walls, x, y, dx, dy, radius, width, height) {
+  if (dx === 0 && dy === 0) return { x, y };
+  walls = sweptWalls(walls, x, y, dx, dy, radius);
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) * 2));
   const stepX = dx / steps, stepY = dy / steps;
   let nextX = x, nextY = y;
@@ -60,6 +68,7 @@ export function preventMultipleCircleOverlap(current, proposed, radius) {
 }
 
 export function advanceBullet(bullet, walls, radius, width, height) {
+  walls = sweptWalls(walls, bullet.x, bullet.y, bullet.vx, bullet.vy, radius);
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(bullet.vx), Math.abs(bullet.vy)) * 2));
   const stepX = bullet.vx / steps, stepY = bullet.vy / steps;
   for (let i = 0; i < steps; i++) {

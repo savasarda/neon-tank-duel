@@ -25,7 +25,7 @@ function newRound(room){
   room.players.forEach((player,index)=>{const spawn=arena.spawns[index],angle=Math.atan2(H/2-spawn.y,W/2-spawn.x);placePlayer(player,spawn,angle)});
 }
 function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,range:player.effects.rangeUntil>now,mines:player.effects.mines,rockets:player.effects.rockets,pierces:player.effects.pierces}}}
-function snapshot(room,includeWalls=false){const now=Date.now();return{code:room.code,maxPlayers:room.maxPlayers,mapLayout:room.mapLayout,tankSpeed:room.tankSpeed,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,...(includeWalls?{walls:room.walls}:{}),mines:room.mines,powerups:room.powerups,reactions:room.reactions,winner:room.winner}}
+function snapshot(room,includeWalls=false){const now=Date.now();return{serverTime:now,code:room.code,maxPlayers:room.maxPlayers,mapLayout:room.mapLayout,tankSpeed:room.tankSpeed,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,...(includeWalls?{walls:room.walls}:{}),mines:room.mines,powerups:room.powerups,reactions:room.reactions,winner:room.winner}}
 function startIfReady(room){if(room.players.length===room.maxPlayers&&room.players.every(player=>player.ready)){newRound(room);broadcast(room,'game-state',true)}}
 function broadcast(room,event='game-state',includeWalls=false){io.to(room.code).emit(event,snapshot(room,includeWalls))}
 function endRound(room,winner,loser){if(room.phase!=='playing')return;const target=room.players[loser];room.explosion={x:target.x,y:target.y,color:PLAYER_COLORS[loser],at:Date.now()};room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room,'game-state',true)}},3000)}
@@ -51,7 +51,8 @@ function grantPower(player,type,now){
 }
 function addBullet(room,owner,angle,type='normal'){
   const player=room.players[owner],rocket=type==='rocket',piercing=type==='pierce',longRange=player.effects.rangeUntil>Date.now(),offset=20,speed=rocket?8:piercing?7:5.5;
-  room.bullets.push({x:player.x+Math.cos(angle)*offset,y:player.y+Math.sin(angle)*offset,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,radius:rocket?22:piercing?14:BULLET_R,life:rocket?220:piercing?320:longRange?480:300,bounces:0,maxBounces:rocket?3:6,owner,type});
+  room.nextBulletId=(room.nextBulletId||0)+1;
+  room.bullets.push({id:room.nextBulletId,x:player.x+Math.cos(angle)*offset,y:player.y+Math.sin(angle)*offset,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,radius:rocket?22:piercing?14:BULLET_R,life:rocket?220:piercing?320:longRange?480:300,bounces:0,maxBounces:rocket?3:6,owner,type});
 }
 function fireForPlayer(room,owner,now=Date.now()){
   const player=room.players[owner];if(!player||player.cooldown>0)return false;
@@ -86,7 +87,7 @@ function tick(room){
   room.players.forEach((player,index)=>{if(player.isBot)updateBot(room,index,now)});
 
   const current=room.players.map(player=>({x:player.x,y:player.y}));
-  const proposed=room.players.map(player=>{player.cooldown=Math.max(0,player.cooldown-1);const input=player.input||{};if(Number.isFinite(input.heading))player.a=input.heading;player.turret=player.a;const boost=player.effects.speedUntil>now?1.7:1;const speed=clamp(input.move||0,0,1)*room.tankSpeed/2*boost;return moveCircle(room.walls,player.x,player.y,Math.cos(player.a)*speed,Math.sin(player.a)*speed,COLLISION_R,W,H)});
+  const proposed=room.players.map(player=>{player.cooldown=Math.max(0,player.cooldown-1);const input=!player.isBot&&now-(player.lastInputAt||0)>250?{}:player.input||{};if(Number.isFinite(input.heading))player.a=input.heading;player.turret=player.a;const boost=player.effects.speedUntil>now?1.7:1;const speed=clamp(input.move||0,0,1)*room.tankSpeed/2*boost;return moveCircle(room.walls,player.x,player.y,Math.cos(player.a)*speed,Math.sin(player.a)*speed,COLLISION_R,W,H)});
   const positions=preventMultipleCircleOverlap(current,proposed,COLLISION_R);room.players.forEach((player,index)=>Object.assign(player,positions[index]));
 
   for(let playerIndex=0;playerIndex<room.players.length;playerIndex++){
@@ -105,7 +106,7 @@ function tick(room){
   room.bullets=room.bullets.filter(bullet=>bullet.life>0&&bullet.bounces<=bullet.maxBounces);
 
   for(const mine of room.mines){mine.life--;mine.armed--;if(mine.armed>0)continue;const hit=room.players.findIndex((player,index)=>index!==mine.owner&&(player.x-mine.x)**2+(player.y-mine.y)**2<(COLLISION_R+25)**2);if(hit>=0){mine.life=0;if(absorbOrEnd(room,hit,mine.owner))return}}
-  room.mines=room.mines.filter(mine=>mine.life>0);room.networkTick=(room.networkTick||0)+1;if(room.networkTick%3===0)broadcast(room);
+  room.mines=room.mines.filter(mine=>mine.life>0);room.networkTick=(room.networkTick||0)+1;if(room.networkTick%3===0)io.to(room.code).volatile.emit('game-state',snapshot(room));
 }
 
 io.on('connection',socket=>{
@@ -115,11 +116,15 @@ io.on('connection',socket=>{
   socket.on('join-room',raw=>{const code=String(raw||'').toUpperCase(),room=rooms.get(code);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=room.maxPlayers)return socket.emit('room-error','Bu oda dolu.');const slot=room.players.length,spawn=room.spawns[slot];room.players.push({id:socket.id,ready:false,x:spawn.x,y:spawn.y,a:0,turret:0,score:0,input:{},cooldown:0,effects:freshEffects()});socket.join(code);socket.emit('room-joined',{code,slot,state:snapshot(room,true)});broadcast(room)});
   socket.on('set-ready',({code,ready})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(!player||room.phase!=='waiting')return;player.ready=Boolean(ready);broadcast(room);startIfReady(room)});
   socket.on('reaction',({code,emoji})=>{const room=rooms.get(code),owner=room?.players.findIndex(item=>item.id===socket.id),player=room?.players[owner],now=Date.now();if(!player||room.phase!=='playing'||!REACTIONS.includes(emoji)||now-(player.lastReaction||0)<850)return;player.lastReaction=now;room.reactions.push({owner,emoji,x:player.x,y:player.y-74,life:105});broadcast(room)});
-  socket.on('player-input',({code,input})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(player&&room.phase==='playing')player.input={move:clamp(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):player.a}});
+  socket.on('player-input',({code,input})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(player&&room.phase==='playing'){player.lastInputAt=Date.now();player.input={move:clamp(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):player.a}}});
   socket.on('fire',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id);if(!room||owner<0||room.phase!=='playing')return;if(fireForPlayer(room,owner))broadcast(room)});
   socket.on('deploy-mine',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id),player=room?.players[owner];if(!player||room.phase!=='playing'||player.effects.mines<=0)return;const behind={x:player.x-Math.cos(player.a)*52,y:player.y-Math.sin(player.a)*52},position=circleTouchesWorld(room.walls,behind.x,behind.y,22,W,H)?player:behind;player.effects.mines--;room.mines.push({x:position.x,y:position.y,owner,armed:45,life:900});broadcast(room)});
   socket.on('leave-room',({code})=>{const room=rooms.get(code);if(!room||!room.players.some(player=>player.id===socket.id))return;socket.leave(code);if(room.players.length===1){rooms.delete(code);return}room.phase='disconnected';broadcast(room,'player-disconnected');setTimeout(()=>{if(rooms.get(room.code)===room)rooms.delete(room.code)},10000)});
   socket.on('disconnect',()=>{for(const room of rooms.values()){if(!room.players.some(player=>player.id===socket.id))continue;room.phase='disconnected';broadcast(room,'player-disconnected');setTimeout(()=>{if(rooms.get(room.code)===room)rooms.delete(room.code)},10000)}});
 });
-setInterval(()=>rooms.forEach(tick),1000/60);
+let previousTick=performance.now(),accumulator=0;
+setInterval(()=>{
+  const now=performance.now();accumulator=Math.min(100,accumulator+now-previousTick);previousTick=now;
+  while(accumulator>=1000/60){rooms.forEach(tick);accumulator-=1000/60}
+},4);
 http.listen(process.env.PORT||3000,()=>console.log('Tank server running'));
