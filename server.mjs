@@ -46,6 +46,28 @@ function addBullet(room,owner,angle,type='normal'){
   const player=room.players[owner],rocket=type==='rocket',offset=20;
   room.bullets.push({x:player.x+Math.cos(angle)*offset,y:player.y+Math.sin(angle)*offset,vx:Math.cos(angle)*(rocket?8:5.5),vy:Math.sin(angle)*(rocket?8:5.5),radius:rocket?22:BULLET_R,life:rocket?180:230,bounces:0,maxBounces:rocket?3:6,owner,type});
 }
+function fireForPlayer(room,owner,now=Date.now()){
+  const player=room.players[owner];if(!player||player.cooldown>0)return false;
+  const active=room.bullets.filter(bullet=>bullet.owner===owner).length,available=MAX_BULLETS-active;if(available<=0)return false;
+  player.cooldown=28;player.turret=player.a;
+  if(player.effects.rockets>0){player.effects.rockets--;addBullet(room,owner,player.a,'rocket')}
+  else if(player.effects.doubleUntil>now&&available>=2){addBullet(room,owner,player.a-.09);addBullet(room,owner,player.a+.09)}
+  else addBullet(room,owner,player.a);
+  return true;
+}
+function updateBot(room,index,now){
+  const bot=room.players[index],target=room.players[index===0?1:0];if(!bot||!target)return;
+  bot.botThink=(bot.botThink||0)-1;
+  if(bot.botThink<=0){
+    const direct=Math.atan2(target.y-bot.y,target.x-bot.x),angles=[direct,direct-.42,direct+.42,bot.a-.8,bot.a+.8,direct+Math.PI/2,direct-Math.PI/2];
+    let best=bot.a,bestScore=-Infinity;
+    for(const angle of angles){const moved=moveCircle(room.walls,bot.x,bot.y,Math.cos(angle)*28,Math.sin(angle)*28,COLLISION_R,W,H),travel=Math.hypot(moved.x-bot.x,moved.y-bot.y),distance=Math.hypot(target.x-moved.x,target.y-moved.y),score=travel*8-distance*.018+Math.random()*8;if(score>bestScore){bestScore=score;best=angle}}
+    bot.input={move:.82,heading:best};bot.botThink=10+Math.floor(Math.random()*12);
+  }
+  const distance=Math.hypot(target.x-bot.x,target.y-bot.y);
+  if(distance<1400&&Math.random()<.035)fireForPlayer(room,index,now);
+  if(bot.effects.mines>0&&distance<190&&Math.random()<.04){bot.effects.mines--;room.mines.push({x:bot.x,y:bot.y,owner:index,armed:45,life:900})}
+}
 function absorbOrEnd(room,target,winner){const player=room.players[target];if(player.effects.shieldUntil>Date.now()){player.effects.shieldUntil=0;return false}endRound(room,winner);return true}
 
 function tick(room){
@@ -53,6 +75,7 @@ function tick(room){
   if(room.phase==='countdown'){const remaining=Math.max(0,Math.ceil((room.roundStartsAt-now)/1000));if(remaining!==room.countdown){room.countdown=remaining;broadcast(room)}if(remaining===0){room.phase='playing';broadcast(room)}return}
   if(room.phase!=='playing')return;
   if(now>=room.nextPowerupAt&&room.powerups.length<2){spawnPowerup(room);room.nextPowerupAt=now+8000}
+  room.players.forEach((player,index)=>{if(player.isBot)updateBot(room,index,now)});
 
   const current=room.players.map(player=>({x:player.x,y:player.y}));
   const proposed=room.players.map(player=>{player.cooldown=Math.max(0,player.cooldown-1);const input=player.input||{};if(Number.isFinite(input.heading))player.a=input.heading;player.turret=player.a;const boost=player.effects.speedUntil>now?1.7:1;const speed=clamp(input.move||0,0,1)*room.tankSpeed/2*boost;return moveCircle(room.walls,player.x,player.y,Math.cos(player.a)*speed,Math.sin(player.a)*speed,COLLISION_R,W,H)});
@@ -78,9 +101,10 @@ function tick(room){
 
 io.on('connection',socket=>{
   socket.on('create-room',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=createMaze(W,H,WALL),room={code,tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,x:arena.spawns[0].x,y:arena.spawns[0].y,a:.78,turret:.78,score:0,input:{},cooldown:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)})});
+  socket.on('create-bot-game',({speed}={})=>{const code=roomCode(),tankSpeed=SPEEDS[speed]||SPEEDS.normal,arena=createMaze(W,H,WALL),room={code,tankSpeed,theme:'neon',roundId:0,explosion:null,spawns:arena.spawns,players:[{id:socket.id,score:0,effects:freshEffects()},{id:`bot-${code}`,isBot:true,score:0,effects:freshEffects()}],walls:arena.walls,bullets:[],trails:[],mines:[],powerups:[],phase:'waiting'};newRound(room);rooms.set(code,room);socket.join(code);socket.emit('room-joined',{code,slot:0,state:snapshot(room)});broadcast(room)});
   socket.on('join-room',raw=>{const code=String(raw||'').toUpperCase(),room=rooms.get(code);if(!room)return socket.emit('room-error','Oda bulunamadı.');if(room.players.length>=2)return socket.emit('room-error','Bu oda dolu.');room.players.push({id:socket.id,x:room.spawns[1].x,y:room.spawns[1].y,a:-2.36,turret:-2.36,score:0,input:{},cooldown:0,effects:freshEffects()});socket.join(code);newRound(room);socket.emit('room-joined',{code,slot:1,state:snapshot(room)});broadcast(room)});
   socket.on('player-input',({code,input})=>{const room=rooms.get(code),player=room?.players.find(item=>item.id===socket.id);if(player&&room.phase==='playing')player.input={move:clamp(Number(input.move)||0,0,1),heading:Number.isFinite(input.heading)?Number(input.heading):player.a}});
-  socket.on('fire',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id),player=room?.players[owner];if(!player||room.phase!=='playing'||player.cooldown>0)return;const active=room.bullets.filter(bullet=>bullet.owner===owner).length,available=MAX_BULLETS-active;if(available<=0)return;player.cooldown=28;player.turret=player.a;if(player.effects.rockets>0){player.effects.rockets--;addBullet(room,owner,player.a,'rocket')}else if(player.effects.doubleUntil>Date.now()&&available>=2){addBullet(room,owner,player.a-.09);addBullet(room,owner,player.a+.09)}else addBullet(room,owner,player.a);broadcast(room)});
+  socket.on('fire',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id);if(!room||owner<0||room.phase!=='playing')return;if(fireForPlayer(room,owner))broadcast(room)});
   socket.on('deploy-mine',({code})=>{const room=rooms.get(code),owner=room?.players.findIndex(player=>player.id===socket.id),player=room?.players[owner];if(!player||room.phase!=='playing'||player.effects.mines<=0)return;const behind={x:player.x-Math.cos(player.a)*52,y:player.y-Math.sin(player.a)*52},position=circleTouchesWorld(room.walls,behind.x,behind.y,22,W,H)?player:behind;player.effects.mines--;room.mines.push({x:position.x,y:position.y,owner,armed:45,life:900});broadcast(room)});
   socket.on('leave-room',({code})=>{const room=rooms.get(code);if(!room||!room.players.some(player=>player.id===socket.id))return;socket.leave(code);if(room.players.length===1){rooms.delete(code);return}room.phase='disconnected';broadcast(room,'player-disconnected');setTimeout(()=>{if(rooms.get(room.code)===room)rooms.delete(room.code)},10000)});
   socket.on('disconnect',()=>{for(const room of rooms.values()){if(!room.players.some(player=>player.id===socket.id))continue;room.phase='disconnected';broadcast(room,'player-disconnected');setTimeout(()=>{if(rooms.get(room.code)===room)rooms.delete(room.code)},10000)}});
