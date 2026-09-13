@@ -2,9 +2,8 @@ export const MAZE_COLS = 8;
 export const MAZE_ROWS = 6;
 export const MAZE_MARGIN = 40;
 
-export function createMaze(width, height, wallThickness, random = Math.random) {
-  const cols = MAZE_COLS;
-  const rows = MAZE_ROWS;
+export function createMaze(width, height, wallThickness, options = {}) {
+  const { cols = MAZE_COLS, rows = MAZE_ROWS, extraOpenings = 4, random = Math.random } = options;
   const margin = MAZE_MARGIN;
   const cellWidth = (width - margin * 2) / cols;
   const cellHeight = (height - margin * 2) / rows;
@@ -35,7 +34,7 @@ export function createMaze(width, height, wallThickness, random = Math.random) {
     stack.push([nextX, nextY]);
   }
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < extraOpenings; i++) {
     const x = Math.floor(random() * cols);
     const y = Math.floor(random() * rows);
     if (random() > 0.5 && x < cols - 1) cells[y][x].right = false;
