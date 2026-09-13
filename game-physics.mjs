@@ -76,3 +76,25 @@ export function advanceBullet(bullet, walls, radius, width, height) {
   }
   return false;
 }
+
+export function advancePiercingBullet(bullet, radius, width, height) {
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(bullet.vx), Math.abs(bullet.vy)) * 2));
+  let bounced = false;
+  for (let i = 0; i < steps; i++) {
+    let nextX = bullet.x + bullet.vx / steps;
+    let nextY = bullet.y + bullet.vy / steps;
+    if (nextX - radius < 0 || nextX + radius > width) {
+      bullet.vx *= -1;
+      nextX = bullet.x + bullet.vx / steps;
+      bounced = true;
+    }
+    if (nextY - radius < 0 || nextY + radius > height) {
+      bullet.vy *= -1;
+      nextY = bullet.y + bullet.vy / steps;
+      bounced = true;
+    }
+    bullet.x = nextX;
+    bullet.y = nextY;
+  }
+  return bounced;
+}

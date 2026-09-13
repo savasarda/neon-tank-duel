@@ -1,19 +1,19 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { advanceBullet, circleTouchesWorld, clamp, moveCircle, preventMultipleCircleOverlap } from './game-physics.mjs';
+import { advanceBullet, advancePiercingBullet, circleTouchesWorld, clamp, moveCircle, preventMultipleCircleOverlap } from './game-physics.mjs';
 import { createMaze } from './maze.mjs';
 
 const W=1400,H=1000,TANK_R=40,COLLISION_R=48,BULLET_R=16,WIN_SCORE=5,WALL=16,MAX_BULLETS=5;
 const SPEEDS={slow:5.4,normal:7.1,fast:8.8};
-const POWER_TYPES=['speed','double','shield','mine','rocket','invisible'];
+const POWER_TYPES=['speed','double','shield','mine','rocket','invisible','range','pierce'];
 const ARENA_THEMES=['neon','desert','ice','space'];
 const PLAYER_COLORS=['#17e6ff','#ff3fb4','#ffe04b','#71ff6b'];
 const app=express();app.use(express.static('dist'));
 const http=createServer(app);const io=new Server(http,{cors:{origin:true}});const rooms=new Map();
 
 function roomCode(){let value;do value=Math.random().toString(36).slice(2,6).toUpperCase();while(rooms.has(value));return value}
-function freshEffects(){return{speedUntil:0,doubleUntil:0,shieldUntil:0,invisibleUntil:0,mines:0,rockets:0}}
+function freshEffects(){return{speedUntil:0,doubleUntil:0,shieldUntil:0,invisibleUntil:0,rangeUntil:0,mines:0,rockets:0,pierces:0}}
 function placePlayer(player,spawn,angle){Object.assign(player,{x:spawn.x,y:spawn.y,a:angle,turret:angle,cooldown:0,input:{},effects:freshEffects()})}
 function newRound(room){
   const arena=createMaze(W,H,WALL);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.trails=[];room.mines=[];room.powerups=[];
@@ -21,7 +21,7 @@ function newRound(room){
   room.phase='countdown';room.countdown=3;room.roundStartsAt=Date.now()+3000;room.nextPowerupAt=room.roundStartsAt+4000;
   room.players.forEach((player,index)=>{const spawn=arena.spawns[index],angle=Math.atan2(H/2-spawn.y,W/2-spawn.x);placePlayer(player,spawn,angle)});
 }
-function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,mines:player.effects.mines,rockets:player.effects.rockets}}}
+function publicPlayer(player,now){const{id,input,cooldown,...visible}=player;return{...visible,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,range:player.effects.rangeUntil>now,mines:player.effects.mines,rockets:player.effects.rockets,pierces:player.effects.pierces}}}
 function snapshot(room){const now=Date.now();return{code:room.code,maxPlayers:room.maxPlayers,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,walls:room.walls,mines:room.mines,powerups:room.powerups,winner:room.winner}}
 function broadcast(room,event='game-state'){io.to(room.code).emit(event,snapshot(room))}
 function endRound(room,winner,loser){if(room.phase!=='playing')return;const target=room.players[loser];room.explosion={x:target.x,y:target.y,color:PLAYER_COLORS[loser],at:Date.now()};room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room)}},3000)}
@@ -40,18 +40,21 @@ function grantPower(player,type,now){
   if(type==='double')player.effects.doubleUntil=now+8000;
   if(type==='shield')player.effects.shieldUntil=now+8000;
   if(type==='invisible')player.effects.invisibleUntil=now+5000;
+  if(type==='range')player.effects.rangeUntil=now+9000;
   if(type==='mine')player.effects.mines=Math.min(2,player.effects.mines+1);
   if(type==='rocket')player.effects.rockets=Math.min(2,player.effects.rockets+1);
+  if(type==='pierce')player.effects.pierces=Math.min(2,player.effects.pierces+1);
 }
 function addBullet(room,owner,angle,type='normal'){
-  const player=room.players[owner],rocket=type==='rocket',offset=20;
-  room.bullets.push({x:player.x+Math.cos(angle)*offset,y:player.y+Math.sin(angle)*offset,vx:Math.cos(angle)*(rocket?8:5.5),vy:Math.sin(angle)*(rocket?8:5.5),radius:rocket?22:BULLET_R,life:rocket?180:230,bounces:0,maxBounces:rocket?3:6,owner,type});
+  const player=room.players[owner],rocket=type==='rocket',piercing=type==='pierce',longRange=player.effects.rangeUntil>Date.now(),offset=20,speed=rocket?8:piercing?7:5.5;
+  room.bullets.push({x:player.x+Math.cos(angle)*offset,y:player.y+Math.sin(angle)*offset,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,radius:rocket?22:piercing?14:BULLET_R,life:rocket?220:piercing?320:longRange?480:300,bounces:0,maxBounces:rocket?3:6,owner,type});
 }
 function fireForPlayer(room,owner,now=Date.now()){
   const player=room.players[owner];if(!player||player.cooldown>0)return false;
   const active=room.bullets.filter(bullet=>bullet.owner===owner).length,available=MAX_BULLETS-active;if(available<=0)return false;
   player.cooldown=28;player.turret=player.a;
-  if(player.effects.rockets>0){player.effects.rockets--;addBullet(room,owner,player.a,'rocket')}
+  if(player.effects.pierces>0){player.effects.pierces--;addBullet(room,owner,player.a,'pierce')}
+  else if(player.effects.rockets>0){player.effects.rockets--;addBullet(room,owner,player.a,'rocket')}
   else if(player.effects.doubleUntil>now&&available>=2){addBullet(room,owner,player.a-.09);addBullet(room,owner,player.a+.09)}
   else addBullet(room,owner,player.a);
   return true;
@@ -89,7 +92,7 @@ function tick(room){
 
   room.trails=room.trails.filter(trail=>--trail.life>0);
   for(const bullet of room.bullets){
-    const oldVx=bullet.vx,oldVy=bullet.vy,radius=bullet.radius||BULLET_R,bounced=advanceBullet(bullet,room.walls,radius,W,H);bullet.life--;bullet.bounces+=bounced?1:0;
+    const oldVx=bullet.vx,oldVy=bullet.vy,radius=bullet.radius||BULLET_R,bounced=bullet.type==='pierce'?advancePiercingBullet(bullet,radius,W,H):advanceBullet(bullet,room.walls,radius,W,H);bullet.life--;bullet.bounces+=bounced?1:0;
     if(bounced){const speed=Math.hypot(oldVx,oldVy)||1;room.trails.push({x1:bullet.x-oldVx/speed*52,y1:bullet.y-oldVy/speed*52,x2:bullet.x,y2:bullet.y,x3:bullet.x+bullet.vx/speed*52,y3:bullet.y+bullet.vy/speed*52,owner:bullet.owner,life:18})}
     const hit=room.players.findIndex((player,index)=>index!==bullet.owner&&(player.x-bullet.x)**2+(player.y-bullet.y)**2<(TANK_R+radius)**2);
     if(hit>=0){bullet.life=0;if(absorbOrEnd(room,hit,bullet.owner))return}

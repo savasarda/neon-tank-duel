@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceBullet, circleTouchesWorld, circlesOverlap, moveCircle, preventCircleOverlap, preventMultipleCircleOverlap } from './game-physics.mjs';
+import { advanceBullet, advancePiercingBullet, circleTouchesWorld, circlesOverlap, moveCircle, preventCircleOverlap, preventMultipleCircleOverlap } from './game-physics.mjs';
 import { createMaze } from './maze.mjs';
 
 const WIDTH=600,HEIGHT=400,WALLS=[{x:290,y:40,w:20,h:320}];
@@ -67,4 +67,16 @@ test('four tanks cannot overlap during simultaneous movement',()=>{
   const proposed=[{x:120,y:120},{x:180,y:120},{x:120,y:180},{x:180,y:180}];
   const result=preventMultipleCircleOverlap(current,proposed,radius);
   for(let first=0;first<result.length;first++)for(let second=first+1;second<result.length;second++)assert.equal(circlesOverlap(result[first],result[second],radius),false);
+});
+
+test('piercing bullet crosses inner walls but reflects at arena boundary',()=>{
+  const bullet={x:100,y:200,vx:18,vy:0};
+  let crossedWall=false,bouncedAtEdge=false;
+  for(let step=0;step<80;step++){
+    const bounced=advancePiercingBullet(bullet,8,600,400);
+    if(bullet.x>318)crossedWall=true;
+    if(bounced)bouncedAtEdge=true;
+  }
+  assert.equal(crossedWall,true);
+  assert.equal(bouncedAtEdge,true);
 });
