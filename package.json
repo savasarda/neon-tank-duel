@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "concurrently \"vite\" \"node server.mjs\"", "build": "tsc -b && vite build", "start": "node server.mjs", "test:logic": "node --test server.test.mjs client-regression.test.mjs" },
+  "scripts": { "dev": "concurrently \"vite\" \"node server.mjs\"", "build": "tsc -b && vite build", "start": "node server.mjs", "test:logic": "node --test server.test.mjs client-regression.test.mjs motion.test.mjs" },
   "dependencies": { "express": "^4.21.2", "socket.io": "^4.8.1", "socket.io-client": "^4.8.1", "react": "^18.3.1", "react-dom": "^18.3.1" },
   "devDependencies": { "@types/react": "^18.3.18", "@types/react-dom": "^18.3.5", "@vitejs/plugin-react": "^4.3.4", "concurrently": "^9.1.2", "typescript": "^5.7.3", "vite": "^6.1.0" }
 }

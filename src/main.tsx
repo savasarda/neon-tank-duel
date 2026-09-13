@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io, Socket } from 'socket.io-client';
 import './style.css';
+import { advanceTank, replayTank, STEP_MS, MAX_PENDING, type Command } from '../tank-motion.mjs';
 
 type Effects={speed:boolean;double:boolean;shield:boolean;invisible:boolean;range:boolean;mines:number;rockets:number;pierces:number};
-type Player={x:number;y:number;a:number;turret:number;score:number;ready?:boolean;moving?:boolean;isBot?:boolean;effects?:Effects};
+type Player={lastProcessedInput?:number;x:number;y:number;a:number;turret:number;score:number;ready?:boolean;moving?:boolean;isBot?:boolean;effects?:Effects};
 type Wall={x:number;y:number;w:number;h:number};
 type Bullet={id:number;bounces:number;x:number;y:number;vx:number;vy:number;owner:number;type?:string;radius?:number};
 type Trail={x1:number;y1:number;x2:number;y2:number;x3:number;y3:number;owner:number;life:number};
@@ -79,14 +80,30 @@ function smoothState(from:State|undefined,to:State,amount:number){
 
 function App(){
   const [socket,setSocket]=useState<Socket>();const [state,setState]=useState<State>();const [slot,setSlot]=useState<number>();const [code,setCode]=useState('');const [join,setJoin]=useState('');const [speed,setSpeed]=useState('normal');const [playerCount,setPlayerCount]=useState(2);const [layout,setLayout]=useState('classic');const [emojiOpen,setEmojiOpen]=useState(false);const [err,setErr]=useState('');const [drive,setDrive]=useState({x:0,y:0});const [metrics,setMetrics]=useState({fps:60,ping:0,low:false});
-  const canvas=useRef<HTMLCanvasElement>(null),controls=useRef({move:0,heading:0}),connectedToGame=useRef(false),slotRef=useRef<number>(),latestState=useRef<State>(),previousState=useRef<State>(),stateArrivedAt=useRef(0),prediction=useRef<{x:number;y:number;a:number;roundId?:number;at:number}>(),lowQuality=useRef(false),lastRound=useRef<number>(),transitionStart=useRef(0),uiSignature=useRef(''),snapshots=useRef<{state:State;at:number}[]>([]);
+  const canvas=useRef<HTMLCanvasElement>(null),controls=useRef({move:0,heading:0}),connectedToGame=useRef(false),slotRef=useRef<number>(),latestState=useRef<State>(),previousState=useRef<State>(),stateArrivedAt=useRef(0),prediction=useRef<{x:number;y:number;a:number}>(),previousPrediction=useRef<{x:number;y:number;a:number}>(),pendingInputs=useRef<Command[]>([]),outbox=useRef<Command[]>([]),inputSequence=useRef(0),simulationTime=useRef(0),visualError=useRef({x:0,y:0}),lowQuality=useRef(false),lastRound=useRef<number>(),transitionStart=useRef(0),uiSignature=useRef(''),snapshots=useRef<{state:State;at:number}[]>([]);
   slotRef.current=slot;
   performanceDisplay=metrics;
   const acceptState=(next:State)=>{
     const current=latestState.current,changed=!current||current.code!==next.code||current.roundId!==next.roundId||current.phase!==next.phase;
     const merged={...next,walls:next.walls??current?.walls??[]},stamp=performance.now();
     previousState.current=current;latestState.current=merged;stateArrivedAt.current=stamp;
-    if(changed){snapshots.current=[];prediction.current=undefined;controls.current={move:0,heading:merged.players[slotRef.current??0]?.a??0}}
+    if(changed){
+      snapshots.current=[];prediction.current=undefined;previousPrediction.current=undefined;pendingInputs.current=[];outbox.current=[];inputSequence.current=0;simulationTime.current=0;visualError.current={x:0,y:0};
+      controls.current={move:0,heading:merged.players[slotRef.current??0]?.a??0};
+    }
+    const local=merged.players[slotRef.current??0];
+    if(local&&merged.phase==='playing'){
+      pendingInputs.current=pendingInputs.current.filter(command=>command.seq>(local.lastProcessedInput??0));
+      const reconciled=replayTank(local,pendingInputs.current,merged.walls, (merged.tankSpeed??7.1)*(local.effects?.speed?1.7:1),merged.players.filter((_,i)=>i!==slotRef.current));
+      const old=prediction.current;
+      if(old&&Math.hypot(old.x-reconciled.x,old.y-reconciled.y)<48){
+        visualError.current.x+=old.x-reconciled.x;visualError.current.y+=old.y-reconciled.y;
+      }else visualError.current={x:0,y:0};
+      if(old&&previousPrediction.current){
+        previousPrediction.current={x:previousPrediction.current.x+reconciled.x-old.x,y:previousPrediction.current.y+reconciled.y-old.y,a:previousPrediction.current.a+reconciled.a-old.a};
+      }else previousPrediction.current=reconciled;
+      prediction.current=reconciled;
+    }
     snapshots.current.push({state:merged,at:stamp});if(snapshots.current.length>12)snapshots.current.shift();
     const signature=JSON.stringify([merged.code,merged.roundId,merged.phase,merged.countdown,merged.winner,merged.players.map((p,i)=>[p.score,p.ready,p.effects,merged.bullets.filter(b=>b.owner===i).length])]);
     if(signature!==uiSignature.current){uiSignature.current=signature;setState(merged)}
@@ -96,7 +113,14 @@ function App(){
   connectedToGame.current=Boolean(state&&slot!==undefined);
   useEffect(()=>{if(!state)return;const stopScroll=(event:TouchEvent)=>event.preventDefault();document.documentElement.classList.add('game-active');document.addEventListener('touchmove',stopScroll,{passive:false});return()=>{document.documentElement.classList.remove('game-active');document.removeEventListener('touchmove',stopScroll)}},[Boolean(state)]);
   useEffect(()=>{const ready=Boolean(state&&slot!==undefined&&state.players[slot]?.ready);document.documentElement.classList.toggle('self-ready',ready);return()=>document.documentElement.classList.remove('self-ready')},[Boolean(state&&slot!==undefined&&state.players[slot]?.ready)]);
-  useEffect(()=>{if(!socket||slot===undefined||!code)return;const timer=setInterval(()=>{if(socket.connected&&latestState.current?.phase==='playing'&&!document.hidden)socket.volatile.emit('player-input',{code,input:controls.current})},1000/30);return()=>clearInterval(timer)},[slot,socket,code]);
+  useEffect(()=>{
+    if(!socket||slot===undefined||!code)return;
+    const timer=setInterval(()=>{
+      if(!socket.connected||!socket.io.engine?.transport?.writable||!outbox.current.length)return;
+      socket.emit('input-batch',{code,roundId:latestState.current?.roundId,commands:outbox.current.splice(0,MAX_PENDING)});
+    },1000/30);
+    return()=>clearInterval(timer);
+  },[slot,socket,code]);
   useEffect(()=>{if(!socket)return;const timer=setInterval(()=>{const started=performance.now();socket.timeout(1500).emit('latency-probe',(error?:Error)=>{if(!error)setMetrics(current=>({...current,ping:Math.round(performance.now()-started)}))})},2000);return()=>clearInterval(timer)},[socket]);
   useEffect(()=>{
     const element=canvas.current;if(!element||slot===undefined)return;
@@ -111,7 +135,7 @@ function App(){
       frame=requestAnimationFrame(animate);
       if(document.hidden){lastFrame=stamp;windowStart=stamp;frames=0;return}
       if(stamp-lastFrame<15.5)return;
-      const delta=Math.min(50,stamp-lastFrame);lastFrame=stamp;frames++;
+      const delta=Math.min(100,stamp-lastFrame);lastFrame=stamp;frames++;
       if(stamp-windowStart>=2000){
         const fps=Math.round(frames*1000/(stamp-windowStart));badWindows=fps<40?badWindows+1:0;goodWindows=fps>56?goodWindows+1:0;
         if(!lowQuality.current&&badWindows>=2){lowQuality.current=true;resize()}
@@ -126,25 +150,33 @@ function App(){
       const display=before&&after?smoothState(before.state,after.state,amount):smoothState(undefined,current,1);
       if(display.phase!==current.phase||display.roundId!==current.roundId)Object.assign(display,smoothState(undefined,current,1));
       const local=current.players[slot];
-      if(local&&current.phase==='playing'&&stamp-stateArrivedAt.current<250){
-        const input=controls.current,lead=Math.min(100,Math.max(0,performanceDisplay.ping/2)+stamp-stateArrivedAt.current);
-        // Bounded visual lead; authoritative state is never modified.
-        const heading=input.move>.05?input.heading:local.a,travel=input.move*(current.tankSpeed??7.1)*30*(local.effects?.speed?1.7:1)*lead/1000;
-        const targetPosition=movePredicted(current.walls??[],local.x,local.y,Math.cos(heading)*travel,Math.sin(heading)*travel);
-        let predicted=prediction.current;
-        if(!predicted||predicted.roundId!==current.roundId||Math.hypot(predicted.x-targetPosition.x,predicted.y-targetPosition.y)>96)
-          predicted=prediction.current={...local,roundId:current.roundId,at:stamp};
-        const moved=movePredicted(current.walls??[],predicted.x,predicted.y,(targetPosition.x-predicted.x)*(1-Math.exp(-delta/35)),(targetPosition.y-predicted.y)*(1-Math.exp(-delta/35)));
-        if(!current.players.some((p,i)=>i!==slot&&Math.hypot(p.x-moved.x,p.y-moved.y)<96))Object.assign(predicted,moved);
-        else Object.assign(predicted,{x:local.x,y:local.y});
-        display.players[slot]={...local,x:predicted.x,y:predicted.y,a:heading,turret:heading};
-      }else prediction.current=undefined;
+      if(local&&current.phase==='playing'&&stamp-stateArrivedAt.current<500&&socket?.connected){
+        prediction.current??={x:local.x,y:local.y,a:local.a};
+        previousPrediction.current??=prediction.current;
+        simulationTime.current+=delta;
+        const speed=(current.tankSpeed??7.1)*(local.effects?.speed?1.7:1),others=current.players.filter((_,i)=>i!==slot);
+        while(simulationTime.current>=STEP_MS){
+          simulationTime.current-=STEP_MS;
+          if(pendingInputs.current.length>=MAX_PENDING)continue;
+          const command={seq:++inputSequence.current,move:controls.current.move,heading:controls.current.heading};
+          previousPrediction.current=prediction.current;
+          prediction.current=advanceTank(prediction.current,command,current.walls??[],speed,others);
+          pendingInputs.current.push(command);outbox.current.push(command);
+        }
+        const alpha=Math.min(1,simulationTime.current/STEP_MS),previous=previousPrediction.current,predicted=prediction.current;
+        visualError.current.x*=Math.exp(-delta/80);visualError.current.y*=Math.exp(-delta/80);
+        const x=blend(previous.x,predicted.x,alpha),y=blend(previous.y,predicted.y,alpha);
+        const displayed=movePredicted(current.walls??[],predicted.x,predicted.y,x+visualError.current.x-predicted.x,y+visualError.current.y-predicted.y);
+        const safe=others.some(other=>Math.hypot(other.x-displayed.x,other.y-displayed.y)<96)?predicted:displayed;
+        const a=blendAngle(previous.a,predicted.a,alpha);
+        display.players[slot]={...local,...safe,a,turret:a,moving:controls.current.move>.05};
+      }else{prediction.current=undefined;previousPrediction.current=undefined;simulationTime.current=0;visualError.current={x:0,y:0}}
       if(lastRound.current!==current.roundId){lastRound.current=current.roundId;transitionStart.current=Date.now()}
       draw(context,display,slot,Date.now(),Date.now()-transitionStart.current);
     };
     const observer=new ResizeObserver(resize);observer.observe(element);resize();frame=requestAnimationFrame(animate);
     return()=>{cancelAnimationFrame(frame);observer.disconnect()};
-  },[slot,code]);
+  },[slot,code,socket]);
   const share=async()=>{const text=`Neon Tank Düellosu odama katıl: ${code}`;if(navigator.share)await navigator.share({title:'Neon Tank Düellosu',text});else await navigator.clipboard.writeText(code)};
   const driveInput=(rawX:number,rawY:number)=>{const length=Math.hypot(rawX,rawY),factor=length>.5?.5/length:1,x=rawX*factor,y=rawY*factor,power=Math.min(1,Math.hypot(x,y)*2);controls.current={move:power,heading:power>.05?Math.atan2(y,x):controls.current.heading};setDrive({x:x*2,y:y*2})};
   const release=()=>{controls.current={...controls.current,move:0};setDrive({x:0,y:0})};
@@ -170,7 +202,7 @@ function App(){
   },[Boolean(state),socket,code]);
   if(!state)return <main className="lobby"><div className="menu-stars"/><div className="game-badge">ONLINE • 2–4 OYUNCU</div><div className="tank-logo"><span>◢</span><i/></div><div className="brand">NEON<br/><b>TANK DUEL</b></div><p className="tagline">Labirente gir. Sekmeyi hesapla. Rakiplerini yok et.</p><div className="feature-row"><span>⚡ GÜÇLER</span><span>◈ 4 ARENA</span><span>● ONLINE</span></div><section className="lobby-card"><div className="room-settings"><label className="speed">TANK HIZI<select value={speed} onChange={event=>setSpeed(event.target.value)}><option value="slow">Yavaş</option><option value="normal">Normal</option><option value="fast">Hızlı</option></select></label><label className="speed">KİŞİ SAYISI<select value={playerCount} onChange={event=>setPlayerCount(Number(event.target.value))}><option value={2}>2 Oyuncu</option><option value={3}>3 Oyuncu</option><option value={4}>4 Oyuncu</option></select></label></div><label className="speed">HARİTA DÜZENİ<select value={layout} onChange={event=>setLayout(event.target.value)}><option value="classic">Klasik Labirent</option><option value="narrow">Dar Koridorlar</option><option value="open">Açık Arena</option><option value="corners">Dört Köşe</option></select></label><button className="primary" onClick={()=>{requestLandscape();socket?.emit('create-room',{speed,players:playerCount,layout})}}>＋ ONLINE ODA OLUŞTUR</button><button className="bot-game" onClick={()=>{requestLandscape();socket?.emit('create-bot-game',{speed})}}>◆ YAPAY ZEKAYA KARŞI</button><div className="power-guide"><b>GÜÇ KAPSÜLLERİ</b><span>H Hız · 2 Çift · K Kalkan · U Menzil · D Delici · R Roket · M Mayın · G Gizli</span></div><div className="or"><span/>ODA KODUYLA KATIL<span/></div><div className="join-row"><input value={join} onChange={event=>setJoin(event.target.value.toUpperCase())} maxLength={4} placeholder="ODA KODU"/><button className="secondary" onClick={()=>{requestLandscape();socket?.emit('join-room',join)}}>KATIL</button></div></section>{err&&<small>{err}</small>}<footer>İLK 5 SKOR MAÇI KAZANIR</footer></main>;
   const player=state.players[slot!],effects=player?.effects,ammo=5-state.bullets.filter(bullet=>bullet.owner===slot).length,theme=THEMES[state.theme??'neon']??THEMES.neon;
-  const leave=()=>{socket?.emit('leave-room',{code});latestState.current=undefined;snapshots.current=[];prediction.current=undefined;uiSignature.current='';controls.current.move=0;setState(undefined);setSlot(undefined);setCode('');setErr('')};
+  const leave=()=>{socket?.emit('leave-room',{code});latestState.current=undefined;snapshots.current=[];prediction.current=undefined;pendingInputs.current=[];outbox.current=[];uiSignature.current='';controls.current.move=0;setState(undefined);setSlot(undefined);setCode('');setErr('')};
   const headline=state.phase==='waiting'?`Oyuncular bekleniyor ${state.players.length}/${state.maxPlayers??2}`:state.phase==='countdown'?'TUR HAZIRLANIYOR':state.phase==='result'?(state.winner===slot?'ELİ KAZANDIN!':`OYUNCU ${(state.winner??0)+1} KAZANDI`):state.phase==='match-over'?(state.winner===slot?'MAÇ SENİN!':`OYUNCU ${(state.winner??0)+1} MAÇI KAZANDI`):'HEDEFİ YOK ET';
   const activePowers=[effects?.speed&&'⚡ HIZ',effects?.double&&'Ⅱ ÇİFT',effects?.shield&&'◇ KALKAN',effects?.invisible&&'◌ GİZLİ',effects?.range&&'↗ UZUN MENZİL',Boolean(effects?.rockets)&&`R ROKET ×${effects?.rockets}`,Boolean(effects?.pierces)&&`D DELİCİ ×${effects?.pierces}`].filter(Boolean);
   const sendReaction=(emoji:string)=>{navigator.vibrate?.(12);socket?.emit('reaction',{code,emoji});setEmojiOpen(false)};
