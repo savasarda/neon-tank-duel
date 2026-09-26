@@ -35,13 +35,13 @@ function snapshot(room,includeWalls=false){const now=Date.now();return{motionVer
 function startIfReady(room){if(room.players.length===room.maxPlayers&&room.players.every(player=>player.ready)){newRound(room);broadcast(room,'game-state',true)}}
 function broadcast(room,event='game-state',includeWalls=false){io.to(room.code).emit(event,snapshot(room,includeWalls))}
 function returnPlayersToMenu(room){if(rooms.get(room.code)!==room||room.phase!=='match-over')return;io.to(room.code).emit('return-to-menu');for(const player of room.players)io.sockets.sockets.get(player.id)?.leave(room.code);rooms.delete(room.code)}
-function endRound(room,winner,loser){if(room.phase!=='playing')return;const target=room.players[loser];room.explosion={x:target.x,y:target.y,color:target.color||PLAYER_COLORS[loser],at:Date.now()};room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');setTimeout(()=>returnPlayersToMenu(room),4000);return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room,'game-state',true)}},3000)}
+function endRound(room,winner,loser){if(room.phase!=='playing')return;const target=room.players[loser];room.explosion={x:target.x,y:target.y,color:target.color||PLAYER_COLORS[loser],at:Date.now()};target.deaths=(target.deaths||0)+1;room.players[winner].score++;room.phase='result';room.winner=winner;broadcast(room,'round-result');if(room.players[winner].score>=WIN_SCORE){room.phase='match-over';broadcast(room,'match-result');setTimeout(()=>returnPlayersToMenu(room),8000);return}setTimeout(()=>{if(rooms.has(room.code)){newRound(room);broadcast(room,'game-state',true)}},3000)}
 function survivorDeath(room,winner,loser){
   const now=Date.now(),target=room.players[loser];
   if(!target||target.respawnAt)return;
   room.explosion={x:target.x,y:target.y,color:target.color||PLAYER_COLORS[loser],at:now};
   if(!applySurvivorDeath(room,winner,loser,now,WIN_SCORE))return;
-  if(room.phase==='match-over'){broadcast(room,'match-result');setTimeout(()=>returnPlayersToMenu(room),4000)}
+  if(room.phase==='match-over'){broadcast(room,'match-result');setTimeout(()=>returnPlayersToMenu(room),8000)}
   else broadcast(room,'game-state');
 }
 function defeat(room,winner,loser){if(room.gameMode==='survivor')survivorDeath(room,winner,loser);else endRound(room,winner,loser)}

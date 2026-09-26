@@ -12,6 +12,7 @@ export function applySurvivorDeath(room, winner, loser, now, winScore = 5) {
   if (target.inputQueue) target.inputQueue.commands = [];
   target.effects = Object.fromEntries(Object.keys(target.effects).map(key => [key, 0]));
   target.selfHits = 0;
+  target.deaths = (target.deaths || 0) + 1;
   room.players[winner].score++;
   room.bullets = room.bullets.filter(bullet => bullet.owner !== loser);
   room.mines = room.mines.filter(mine => mine.owner !== loser);

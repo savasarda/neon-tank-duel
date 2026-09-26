@@ -14,12 +14,14 @@ test('Survivor death scores without ending the round and ignores repeated hits',
   assert.equal(match.phase, 'playing');
   assert.equal(match.roundId, 7);
   assert.equal(match.players[0].score, 1);
+  assert.equal(match.players[1].deaths, 1);
   assert.equal(match.players[1].respawnAt, 1000 + RESPAWN_MS);
   assert.deepEqual(match.players[1].inputQueue.commands, []);
   assert.equal(match.bullets.length, 1);
   assert.equal(match.mines.length, 0);
   assert.equal(applySurvivorDeath(match, 0, 1, 1001), false);
   assert.equal(match.players[0].score, 1);
+  assert.equal(match.players[1].deaths, 1);
 });
 
 test('Survivor ends the match on the fifth point', () => {
