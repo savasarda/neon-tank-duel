@@ -206,17 +206,19 @@ function App(){
   useEffect(()=>{
     if(!state)return;
     let active:number|undefined,origin={x:0,y:0};
-    const down=(event:PointerEvent)=>{
-      if(active!==undefined||latestState.current?.phase!=='playing'||event.clientX>innerWidth*.46||event.clientY<52)return;
-      if((event.target as Element).closest('button,input,select,header,.invite,.emoji-picker'))return;
-      active=event.pointerId;origin={x:event.clientX,y:event.clientY};release();
-      (event.target as Element).setPointerCapture?.(event.pointerId);
-    };
-    const move=(event:PointerEvent)=>{if(event.pointerId!==active)return;
+    const steer=(event:PointerEvent)=>{
       const x=event.clientX-origin.x,y=event.clientY-origin.y,length=Math.hypot(x,y);
       if(length<8){release();return}
       const strength=Math.min(1,(length-8)/48);driveInput(x/length*strength*.5,y/length*strength*.5);
     };
+    const down=(event:PointerEvent)=>{
+      if(active!==undefined||latestState.current?.phase!=='playing'||event.clientX>innerWidth*.48||event.clientY<52)return;
+      if((event.target as Element).closest('button,input,select,header,.invite,.emoji-picker'))return;
+      const stick=document.querySelector('.stick')?.getBoundingClientRect();
+      active=event.pointerId;origin=stick?{x:stick.left+stick.width/2,y:stick.top+stick.height/2}:{x:event.clientX,y:event.clientY};
+      (event.target as Element).setPointerCapture?.(event.pointerId);steer(event);
+    };
+    const move=(event:PointerEvent)=>{if(event.pointerId===active)steer(event)};
     const stop=()=>{active=undefined;release();if(socket?.connected)socket.emit('player-input',{code,input:controls.current})};
     const up=(event:PointerEvent)=>{if(event.pointerId===active)stop()};
     const hidden=()=>{if(document.hidden)stop()};
