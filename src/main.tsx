@@ -6,16 +6,17 @@ import { TANK_COLORS, BADGES } from '../player-profile.mjs';
 import { advanceTank, replayTank, STEP_MS, MAX_PENDING, type Command } from '../tank-motion.mjs';
 
 type Effects={speed:boolean;double:boolean;shield:boolean;invisible:boolean;range:boolean;bulletSpeed:boolean;phase:boolean;mines:number;rockets:number;pierces:number};
-type Player={name?:string;color?:string;badge?:string;lastProcessedInput?:number;x:number;y:number;a:number;turret:number;score:number;selfHits?:number;ready?:boolean;moving?:boolean;isBot?:boolean;effects?:Effects};
+type Player={name?:string;color?:string;badge?:string;lastProcessedInput?:number;x:number;y:number;a:number;turret:number;score:number;selfHits?:number;ready?:boolean;moving?:boolean;isBot?:boolean;respawnAt?:number;spawnSerial?:number;invulnerableUntil?:number;effects?:Effects};
 type Wall={x:number;y:number;w:number;h:number};
 type Bullet={id:number;bounces:number;x:number;y:number;vx:number;vy:number;owner:number;type?:string;radius?:number};
 type Trail={x1:number;y1:number;x2:number;y2:number;x3:number;y3:number;owner:number;life:number};
 type Powerup={id:string;x:number;y:number;type:string};type Mine={x:number;y:number;owner:number;armed:number};
 type Explosion={x:number;y:number;color:string;at:number};
 type Reaction={owner:number;emoji:string;x:number;y:number;life:number};
-type State={code:string;maxPlayers?:number;mapLayout?:string;tankSpeed?:number;selfDamage?:boolean;serverTime?:number;phase:string;countdown?:number;roundId?:number;theme?:string;explosion?:Explosion|null;players:Player[];walls?:Wall[];bullets:Bullet[];trails?:Trail[];powerups?:Powerup[];mines?:Mine[];reactions?:Reaction[];winner?:number};
+type State={code:string;maxPlayers?:number;mapLayout?:string;gameMode?:'classic'|'survivor';arena?:{width:number;height:number;radius:number;tankRadius:number};tankSpeed?:number;selfDamage?:boolean;serverTime?:number;phase:string;countdown?:number;roundId?:number;theme?:string;explosion?:Explosion|null;players:Player[];walls?:Wall[];bullets:Bullet[];trails?:Trail[];powerups?:Powerup[];mines?:Mine[];reactions?:Reaction[];winner?:number};
 
 const W=1400,H=1000;
+const arenaSize=(state:State)=>state.arena??{width:W,height:H,radius:48,tankRadius:40};
 const PLAYER_COLORS=['#17e6ff','#ff3fb4','#ffe04b','#71ff6b'];
 const playerColor=(player:Player|undefined,index:number)=>player?.color??PLAYER_COLORS[index]??'#fff';
 const playerName=(player:Player|undefined,index:number)=>player?.name??`Oyuncu ${index+1}`;
@@ -24,13 +25,13 @@ function loadProfile():Profile {
   try {const saved=JSON.parse(localStorage.getItem('neon-tank-profile')??'{}');return {name:typeof saved.name==='string'?saved.name.slice(0,12):'',color:TANK_COLORS.some(c=>c.value===saved.color)?saved.color:TANK_COLORS[0].value,badge:BADGES.some(b=>b.value===saved.badge)?saved.badge:BADGES[0].value}}catch{return{name:'',color:TANK_COLORS[0].value,badge:BADGES[0].value}}
 }
 const nameplates=new Map<string,HTMLCanvasElement>();
-function drawNameplate(ctx:CanvasRenderingContext2D,player:Player,index:number,slot:number){
+function drawNameplate(ctx:CanvasRenderingContext2D,player:Player,index:number,slot:number,arenaWidth=W){
   if(player.effects?.invisible&&index!==slot)return;
   const color=playerColor(player,index),text=`${player.badge??'★'} ${playerName(player,index)}${slot===index?' · SEN':''}`,key=color+text;
   let label=nameplates.get(key);
   if(!label){label=document.createElement('canvas');const c=label.getContext('2d')!;c.font='bold 26px Arial';label.width=Math.ceil(c.measureText(text).width)+20;label.height=38;c.font='bold 26px Arial';c.fillStyle='#050916e8';c.fillRect(0,0,label.width,38);c.fillStyle=color;c.textBaseline='middle';c.fillText(text,10,20);if(nameplates.size>=32)nameplates.clear();nameplates.set(key,label)}
   const factor=Math.max(1,11*(ctx.canvas.width/Math.max(1,ctx.canvas.clientWidth))/(26*ctx.getTransform().a)),width=label.width*factor,height=label.height*factor;
-  ctx.drawImage(label,Math.max(6,Math.min(W-width-6,player.x-width/2)),Math.max(6,player.y-54-height),width,height);
+  ctx.drawImage(label,Math.max(6,Math.min(arenaWidth-width-6,player.x-width/2)),Math.max(6,player.y-54-height),width,height);
 }
 const POWER_STYLE:Record<string,{label:string;color:string}>={speed:{label:'S',color:'#ffe66d'},double:{label:'2',color:'#ff9f43'},shield:{label:'K',color:'#74b9ff'},mine:{label:'☢',color:'#ff5e67'},rocket:{label:'R',color:'#ff7b31'},invisible:{label:'G',color:'#b388ff'},range:{label:'U',color:'#62ffb0'},pierce:{label:'D',color:'#ffffff'},bulletSpeed:{label:'M',color:'#ffdc5e'},phase:{label:'F',color:'#d58cff'}};
 const THEMES:Record<string,{name:string;floor:string;accent:string;wall:string;border:string}>={
@@ -44,29 +45,30 @@ let performanceDisplay={fps:60,ping:0,low:false};
 const coarseDevice=matchMedia('(pointer:coarse)').matches;
 const glow=(radius:number)=>coarseDevice||performanceDisplay.low?0:radius;
 
-function drawBackground(ctx:CanvasRenderingContext2D,theme:string,time:number){
-  const style=THEMES[theme]??THEMES.neon;ctx.fillStyle=style.floor;ctx.fillRect(0,0,W,H);ctx.save();ctx.globalAlpha=.26;ctx.strokeStyle=style.accent;ctx.fillStyle=style.accent;
-  if(theme==='space'){for(let i=0;i<90;i++){const x=(i*193)%W,y=(i*347)%H,r=i%7===0?3:1.5;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill()}}
-  else if(theme==='desert'){for(let i=0;i<70;i++){const x=(i*227)%W,y=(i*131)%H;ctx.beginPath();ctx.arc(x,y,2+(i%4),0,Math.PI*2);ctx.fill()}}
-  else if(theme==='ice'){ctx.lineWidth=2;for(let i=0;i<16;i++){const x=(i*173)%W,y=(i*239)%H;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+35,y+22);ctx.lineTo(x+18,y+55);ctx.stroke()}}
-  else{ctx.lineWidth=1;for(let x=0;x<W;x+=80){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}for(let y=0;y<H;y+=80){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}ctx.globalAlpha=.12+.05*Math.sin(time/500)}ctx.restore();
+function drawBackground(ctx:CanvasRenderingContext2D,theme:string,time:number,width=W,height=H){
+  const style=THEMES[theme]??THEMES.neon;ctx.fillStyle=style.floor;ctx.fillRect(0,0,width,height);ctx.save();ctx.globalAlpha=.26;ctx.strokeStyle=style.accent;ctx.fillStyle=style.accent;
+  if(theme==='space'){for(let i=0;i<90;i++){const x=(i*193)%width,y=(i*347)%height,r=i%7===0?3:1.5;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill()}}
+  else if(theme==='desert'){for(let i=0;i<70;i++){const x=(i*227)%width,y=(i*131)%height;ctx.beginPath();ctx.arc(x,y,2+(i%4),0,Math.PI*2);ctx.fill()}}
+  else if(theme==='ice'){ctx.lineWidth=2;for(let i=0;i<16;i++){const x=(i*173)%width,y=(i*239)%height;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+35,y+22);ctx.lineTo(x+18,y+55);ctx.stroke()}}
+  else{ctx.lineWidth=1;for(let x=0;x<width;x+=80){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,height);ctx.stroke()}for(let y=0;y<height;y+=80){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(width,y);ctx.stroke()}ctx.globalAlpha=.12+.05*Math.sin(time/500)}ctx.restore();
 }
 
 function arenaLayer(state:State){
-  const theme=state.theme??'neon',key=`${state.code}-${state.roundId??0}-${theme}-${state.walls?.length??0}`;
+  const theme=state.theme??'neon',size=arenaSize(state),key=`${state.code}-${state.roundId??0}-${theme}-${size.width}-${size.height}-${state.walls?.length??0}`;
   if(arenaCache?.key===key)return arenaCache.canvas;
-  const canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const context=canvas.getContext('2d')!,style=THEMES[theme]??THEMES.neon;
-  drawBackground(context,theme,0);context.fillStyle=style.wall;context.shadowColor=style.border;context.shadowBlur=12;(state.walls??[]).forEach(wall=>context.fillRect(wall.x,wall.y,wall.w,wall.h));context.shadowBlur=0;context.strokeStyle=style.border;context.lineWidth=8;context.strokeRect(4,4,W-8,H-8);
+  const canvas=document.createElement('canvas');canvas.width=size.width;canvas.height=size.height;const context=canvas.getContext('2d')!,style=THEMES[theme]??THEMES.neon;
+  drawBackground(context,theme,0,size.width,size.height);context.fillStyle=style.wall;context.shadowColor=style.border;context.shadowBlur=12;(state.walls??[]).forEach(wall=>context.fillRect(wall.x,wall.y,wall.w,wall.h));context.shadowBlur=0;context.strokeStyle=style.border;context.lineWidth=8;context.strokeRect(4,4,size.width-8,size.height-8);
   arenaCache={key,canvas};return canvas;
 }
 
-function drawTank(ctx:CanvasRenderingContext2D,player:Player,index:number,slot:number,time:number,hide:boolean){
-  if(hide||(player.effects?.invisible&&index!==slot))return;const color=playerColor(player,index),treadOffset=player.moving?(time/28)%12:0;ctx.save();if(player.effects?.invisible)ctx.globalAlpha=.38;ctx.translate(player.x,player.y);
+function drawTank(ctx:CanvasRenderingContext2D,player:Player,index:number,slot:number,time:number,hide:boolean,tankScale=1,spawnProtected=false){
+  if(hide||player.respawnAt||(player.effects?.invisible&&index!==slot))return;const color=playerColor(player,index),treadOffset=player.moving?(time/28)%12:0;ctx.save();if(player.effects?.invisible)ctx.globalAlpha=.38;ctx.translate(player.x,player.y);ctx.scale(tankScale,tankScale);
   if(player.effects?.phase){ctx.strokeStyle='#df9cff';ctx.shadowColor='#c778ff';ctx.shadowBlur=glow(30);ctx.lineWidth=6;ctx.globalAlpha=.8;ctx.setLineDash([8,7]);ctx.beginPath();ctx.arc(0,0,59+Math.sin(time/90)*3,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1}
+  if(spawnProtected){ctx.strokeStyle='#7dffdc';ctx.shadowColor='#7dffdc';ctx.shadowBlur=glow(20);ctx.lineWidth=5;ctx.beginPath();ctx.arc(0,0,57,0,Math.PI*2);ctx.stroke()}
   if(player.effects?.shield){ctx.strokeStyle='#b9f5ff';ctx.shadowColor='#74dfff';ctx.shadowBlur=glow(28);ctx.lineWidth=6;ctx.beginPath();ctx.arc(0,0,57+Math.sin(time/100)*2,0,Math.PI*2);ctx.stroke()}
   ctx.rotate(player.a);ctx.shadowColor=color;ctx.shadowBlur=glow(16);ctx.fillStyle='#111827';ctx.fillRect(-36,-31,70,15);ctx.fillRect(-36,16,70,15);ctx.fillStyle=color;for(let x=-34+treadOffset;x<34;x+=12){ctx.fillRect(x,-29,7,11);ctx.fillRect(x,18,7,11)}
   ctx.beginPath();ctx.moveTo(-27,-22);ctx.lineTo(22,-22);ctx.lineTo(33,-13);ctx.lineTo(33,13);ctx.lineTo(22,22);ctx.lineTo(-27,22);ctx.lineTo(-34,12);ctx.lineTo(-34,-12);ctx.closePath();ctx.fillStyle=color;ctx.fill();ctx.shadowBlur=glow(0);ctx.fillStyle='#ffffff44';ctx.fillRect(-18,-16,31,5);ctx.fillStyle='#071225';ctx.fillRect(-23,-10,15,20);ctx.restore();
-  ctx.save();if(player.effects?.invisible)ctx.globalAlpha=.38;ctx.translate(player.x,player.y);ctx.rotate(player.turret??player.a);ctx.shadowColor=color;ctx.shadowBlur=glow(16);ctx.fillStyle='#e8fbff';ctx.fillRect(4,-6,58,12);ctx.fillStyle=color;ctx.beginPath();ctx.arc(2,0,19,0,Math.PI*2);ctx.fill();ctx.fillStyle='#081020';ctx.beginPath();ctx.arc(2,0,9,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.fillRect(54,-4,12,8);ctx.restore();
+  ctx.save();if(player.effects?.invisible)ctx.globalAlpha=.38;ctx.translate(player.x,player.y);ctx.scale(tankScale,tankScale);ctx.rotate(player.turret??player.a);ctx.shadowColor=color;ctx.shadowBlur=glow(16);ctx.fillStyle='#e8fbff';ctx.fillRect(4,-6,58,12);ctx.fillStyle=color;ctx.beginPath();ctx.arc(2,0,19,0,Math.PI*2);ctx.fill();ctx.fillStyle='#081020';ctx.beginPath();ctx.arc(2,0,9,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.fillRect(54,-4,12,8);ctx.restore();
 }
 
 function drawExplosion(ctx:CanvasRenderingContext2D,explosion:Explosion|undefined|null,time:number){
@@ -74,38 +76,38 @@ function drawExplosion(ctx:CanvasRenderingContext2D,explosion:Explosion|undefine
 }
 
 function draw(ctx:CanvasRenderingContext2D,state:State,slot:number,time:number,transitionAge:number){
-  const canvas=ctx.canvas,scale=Math.min(canvas.width/W,canvas.height/H),theme=state.theme??'neon',style=THEMES[theme]??THEMES.neon;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);ctx.setTransform(scale,0,0,scale,(canvas.width-W*scale)/2,(canvas.height-H*scale)/2);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(arenaLayer(state),0,0);
+  const canvas=ctx.canvas,size=arenaSize(state),width=size.width,height=size.height,scale=Math.min(canvas.width/width,canvas.height/height),theme=state.theme??'neon',style=THEMES[theme]??THEMES.neon;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,canvas.width,canvas.height);ctx.setTransform(scale,0,0,scale,(canvas.width-width*scale)/2,(canvas.height-height*scale)/2);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(arenaLayer(state),0,0);
   (state.powerups??[]).forEach(power=>{const powerStyle=POWER_STYLE[power.type]??{label:'?',color:'#fff'},pulse=1+Math.sin(time/180)*.12;ctx.save();ctx.translate(power.x,power.y);ctx.scale(pulse,pulse);ctx.fillStyle='#081020';ctx.strokeStyle=powerStyle.color;ctx.shadowColor=powerStyle.color;ctx.shadowBlur=glow(22);ctx.lineWidth=5;ctx.beginPath();ctx.arc(0,0,24,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.fillStyle=powerStyle.color;ctx.font='700 25px Rajdhani';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(powerStyle.label,0,2);ctx.restore()});
   (state.mines??[]).forEach(mine=>{const color=playerColor(state.players[mine.owner],mine.owner);ctx.save();ctx.translate(mine.x,mine.y);ctx.fillStyle='#090b12';ctx.strokeStyle=color;ctx.lineWidth=4;ctx.shadowColor=color;ctx.shadowBlur=glow(mine.armed<=0?15:4);ctx.beginPath();for(let i=0;i<8;i++){const angle=i*Math.PI/4,r=i%2?12:22,x=Math.cos(angle)*r,y=Math.sin(angle)*r;i?ctx.lineTo(x,y):ctx.moveTo(x,y)}ctx.closePath();ctx.fill();ctx.stroke();ctx.restore()});
   (state.trails??[]).slice(-16).forEach(trail=>{const color=playerColor(state.players[trail.owner],trail.owner);ctx.save();ctx.globalAlpha=Math.min(1,trail.life/10);ctx.strokeStyle=color;ctx.shadowColor=color;ctx.shadowBlur=glow(15);ctx.lineWidth=5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(trail.x1,trail.y1);ctx.lineTo(trail.x2,trail.y2);ctx.lineTo(trail.x3,trail.y3);ctx.stroke();for(let i=0;i<5;i++){const angle=i*2.4+trail.life*.2,distance=(18-trail.life)*2+i*3;ctx.fillStyle=i%2?'#fff':color;ctx.beginPath();ctx.arc(trail.x2+Math.cos(angle)*distance,trail.y2+Math.sin(angle)*distance,2+i%3,0,Math.PI*2);ctx.fill()}ctx.restore()});
   state.bullets.forEach(bullet=>{const color=bullet.type==='rocket'?'#ff8a35':bullet.type==='pierce'?'#ffffff':playerColor(state.players[bullet.owner],bullet.owner),speed=Math.hypot(bullet.vx,bullet.vy)||1;ctx.save();ctx.strokeStyle=color;ctx.globalAlpha=bullet.type==='pierce'?.9:.55;ctx.lineWidth=bullet.type==='rocket'?10:bullet.type==='pierce'?7:5;ctx.shadowColor=color;ctx.shadowBlur=glow(bullet.type==='pierce'?30:18);ctx.beginPath();ctx.moveTo(bullet.x-bullet.vx/speed*(bullet.type==='pierce'?70:42),bullet.y-bullet.vy/speed*(bullet.type==='pierce'?70:42));ctx.lineTo(bullet.x,bullet.y);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle=color;ctx.beginPath();ctx.arc(bullet.x,bullet.y,bullet.type==='rocket'?14:bullet.type==='pierce'?10:8,0,Math.PI*2);ctx.fill();ctx.restore()});
-  state.players.forEach((player,index)=>drawTank(ctx,player,index,slot,time,Boolean(state.explosion&&state.phase!=='playing'&&Math.hypot(player.x-state.explosion.x,player.y-state.explosion.y)<5)));
-  if(state.phase==='waiting'||state.phase==='countdown')state.players.forEach((player,index)=>drawNameplate(ctx,player,index,slot));
+  state.players.forEach((player,index)=>drawTank(ctx,player,index,slot,time,Boolean(state.explosion&&state.phase!=='playing'&&Math.hypot(player.x-state.explosion.x,player.y-state.explosion.y)<5),state.gameMode==='survivor'?.65:1,Boolean(player.invulnerableUntil&&player.invulnerableUntil>(state.serverTime??time))));
+  if(state.phase==='waiting'||state.phase==='countdown')state.players.forEach((player,index)=>drawNameplate(ctx,player,index,slot,width));
   (state.reactions??[]).forEach(reaction=>{ctx.save();ctx.globalAlpha=Math.min(1,reaction.life/20);ctx.font='36px Arial';ctx.textAlign='center';ctx.fillStyle='#fff';ctx.shadowColor='#000';ctx.shadowBlur=glow(8);ctx.fillText(reaction.emoji,reaction.x,reaction.y-(105-reaction.life)*.22);ctx.restore()});
   drawExplosion(ctx,state.explosion,time);
   ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle=performanceDisplay.low?'#ffdb69':'#a9c8f2';ctx.font='600 11px Rajdhani, Arial';ctx.textAlign='left';ctx.fillText(`${performanceDisplay.fps} FPS · ${performanceDisplay.ping} ms${performanceDisplay.low?' · TASARRUF':''}`,12,canvas.height-12);ctx.restore();
-  if(transitionAge<750){const progress=transitionAge/750;ctx.save();ctx.globalAlpha=Math.max(0,1-progress);ctx.fillStyle=style.floor;ctx.fillRect(0,0,W,H);ctx.globalAlpha=Math.sin(progress*Math.PI);ctx.fillStyle=style.border;ctx.shadowColor=style.border;ctx.shadowBlur=glow(40);ctx.fillRect(progress*W-45,0,90,H);ctx.restore()}
+  if(transitionAge<750){const progress=transitionAge/750;ctx.save();ctx.globalAlpha=Math.max(0,1-progress);ctx.fillStyle=style.floor;ctx.fillRect(0,0,width,height);ctx.globalAlpha=Math.sin(progress*Math.PI);ctx.fillStyle=style.border;ctx.shadowColor=style.border;ctx.shadowBlur=glow(40);ctx.fillRect(progress*width-45,0,90,height);ctx.restore()}
 }
 
 function blend(from:number,to:number,amount:number){return from+(to-from)*amount}
 function blendAngle(from:number,to:number,amount:number){const delta=Math.atan2(Math.sin(to-from),Math.cos(to-from));return from+delta*amount}
-function touchesWall(walls:Wall[],x:number,y:number,radius:number){if(x-radius<0||y-radius<0||x+radius>W||y+radius>H)return true;return walls.some(wall=>{const nearX=Math.max(wall.x,Math.min(x,wall.x+wall.w)),nearY=Math.max(wall.y,Math.min(y,wall.y+wall.h));return(x-nearX)**2+(y-nearY)**2<radius**2-1e-6})}
-function movePredicted(walls:Wall[],x:number,y:number,dx:number,dy:number){const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))*2));for(let i=0;i<steps;i++){if(!touchesWall(walls,x+dx/steps,y,48))x+=dx/steps;if(!touchesWall(walls,x,y+dy/steps,48))y+=dy/steps}return{x,y}}
+function touchesWall(walls:Wall[],x:number,y:number,radius:number,width=W,height=H){if(x-radius<0||y-radius<0||x+radius>width||y+radius>height)return true;return walls.some(wall=>{const nearX=Math.max(wall.x,Math.min(x,wall.x+wall.w)),nearY=Math.max(wall.y,Math.min(y,wall.y+wall.h));return(x-nearX)**2+(y-nearY)**2<radius**2-1e-6})}
+function movePredicted(walls:Wall[],x:number,y:number,dx:number,dy:number,arena={width:W,height:H,radius:48}){const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))*2));for(let i=0;i<steps;i++){if(!touchesWall(walls,x+dx/steps,y,arena.radius,arena.width,arena.height))x+=dx/steps;if(!touchesWall(walls,x,y+dy/steps,arena.radius,arena.width,arena.height))y+=dy/steps}return{x,y}}
 function smoothState(from:State|undefined,to:State,amount:number){
   if(!from||from.roundId!==to.roundId||from.phase!==to.phase)return {...to,players:to.players.map(player=>({...player})),bullets:to.bullets.map(bullet=>({...bullet}))};
-  return {...to,players:to.players.map((player,index)=>{const previous=from.players[index];return previous?{...player,x:blend(previous.x,player.x,amount),y:blend(previous.y,player.y,amount),a:blendAngle(previous.a,player.a,amount),turret:blendAngle(previous.turret??previous.a,player.turret??player.a,amount)}:player}),bullets:to.bullets.map((bullet)=>{const previous=from.bullets.find(item=>item.id===bullet.id);return previous&&previous.bounces===bullet.bounces?{...bullet,x:blend(previous.x,bullet.x,amount),y:blend(previous.y,bullet.y,amount)}:bullet})}
+  return {...to,players:to.players.map((player,index)=>{const previous=from.players[index];return previous&&previous.spawnSerial===player.spawnSerial&&previous.respawnAt===player.respawnAt?{...player,x:blend(previous.x,player.x,amount),y:blend(previous.y,player.y,amount),a:blendAngle(previous.a,player.a,amount),turret:blendAngle(previous.turret??previous.a,player.turret??player.a,amount)}:player}),bullets:to.bullets.map((bullet)=>{const previous=from.bullets.find(item=>item.id===bullet.id);return previous&&previous.bounces===bullet.bounces?{...bullet,x:blend(previous.x,bullet.x,amount),y:blend(previous.y,bullet.y,amount)}:bullet})}
 }
 
 function App(){
   const [profile,setProfile]=useState<Profile>(loadProfile);
   useEffect(()=>{try{localStorage.setItem('neon-tank-profile',JSON.stringify(profile))}catch{}},[profile]);
-  const [socket,setSocket]=useState<Socket>();const [state,setState]=useState<State>();const [slot,setSlot]=useState<number>();const [code,setCode]=useState('');const [join,setJoin]=useState('');const [speed,setSpeed]=useState('normal');const [playerCount,setPlayerCount]=useState(2);const [layout,setLayout]=useState('classic');const [selfDamage,setSelfDamage]=useState(false);const [lobbyScreen,setLobbyScreen]=useState<'home'|'join'|'profile'|'settings'>('home');const [emojiOpen,setEmojiOpen]=useState(false);const [err,setErr]=useState('');const [drive,setDrive]=useState({x:0,y:0});const [stickOrigin,setStickOrigin]=useState<{x:number;y:number}|null>(null);const [metrics,setMetrics]=useState({fps:60,ping:0,low:false});
+  const [socket,setSocket]=useState<Socket>();const [state,setState]=useState<State>();const [slot,setSlot]=useState<number>();const [code,setCode]=useState('');const [join,setJoin]=useState('');const [speed,setSpeed]=useState('normal');const [playerCount,setPlayerCount]=useState(2);const [layout,setLayout]=useState('classic');const [gameMode,setGameMode]=useState<'classic'|'survivor'>('classic');const [selfDamage,setSelfDamage]=useState(false);const [lobbyScreen,setLobbyScreen]=useState<'home'|'join'|'profile'|'settings'>('home');const [emojiOpen,setEmojiOpen]=useState(false);const [err,setErr]=useState('');const [drive,setDrive]=useState({x:0,y:0});const [stickOrigin,setStickOrigin]=useState<{x:number;y:number}|null>(null);const [respawnClock,setRespawnClock]=useState(0);const [metrics,setMetrics]=useState({fps:60,ping:0,low:false});
   const canvas=useRef<HTMLCanvasElement>(null),controls=useRef({move:0,heading:0}),connectedToGame=useRef(false),slotRef=useRef<number>(),latestState=useRef<State>(),previousState=useRef<State>(),stateArrivedAt=useRef(0),prediction=useRef<{x:number;y:number;a:number}>(),previousPrediction=useRef<{x:number;y:number;a:number}>(),pendingInputs=useRef<Command[]>([]),outbox=useRef<Command[]>([]),inputSequence=useRef(0),simulationTime=useRef(0),visualError=useRef({x:0,y:0}),lowQuality=useRef(false),lastRound=useRef<number>(),transitionStart=useRef(0),uiSignature=useRef(''),snapshots=useRef<{state:State;at:number}[]>([]);
   const returnToMenu=()=>{latestState.current=undefined;snapshots.current=[];prediction.current=undefined;pendingInputs.current=[];outbox.current=[];uiSignature.current='';controls.current.move=0;setStickOrigin(null);setState(undefined);setSlot(undefined);setCode('');setLobbyScreen('home');setEmojiOpen(false);setErr('')};
   slotRef.current=slot;
   performanceDisplay=metrics;
   const acceptState=(next:State)=>{
-    const current=latestState.current,changed=!current||current.code!==next.code||current.roundId!==next.roundId||current.phase!==next.phase;
+    const current=latestState.current,localSlot=slotRef.current??0,changed=!current||current.code!==next.code||current.roundId!==next.roundId||current.phase!==next.phase||current.players[localSlot]?.spawnSerial!==next.players[localSlot]?.spawnSerial;
     const merged={...next,walls:next.walls??current?.walls??[]},stamp=performance.now();
     previousState.current=current;latestState.current=merged;stateArrivedAt.current=stamp;
     if(changed){
@@ -113,9 +115,9 @@ function App(){
       controls.current={move:0,heading:merged.players[slotRef.current??0]?.a??0};
     }
     const local=merged.players[slotRef.current??0];
-    if(local&&merged.phase==='playing'){
+    if(local&&merged.phase==='playing'&&!local.respawnAt){
       pendingInputs.current=pendingInputs.current.filter(command=>command.seq>(local.lastProcessedInput??0));
-      const reconciled=replayTank(local,pendingInputs.current,local.effects?.phase?[]:merged.walls, (merged.tankSpeed??7.1)*(local.effects?.speed?1.7:1),merged.players.filter((_,i)=>i!==slotRef.current));
+      const reconciled=replayTank(local,pendingInputs.current,local.effects?.phase?[]:merged.walls, (merged.tankSpeed??7.1)*(local.effects?.speed?1.7:1),merged.players.filter((p,i)=>i!==slotRef.current&&!p.respawnAt),arenaSize(merged));
       const old=prediction.current;
       if(old&&Math.hypot(old.x-reconciled.x,old.y-reconciled.y)<48){
         visualError.current.x+=old.x-reconciled.x;visualError.current.y+=old.y-reconciled.y;
@@ -126,7 +128,7 @@ function App(){
       prediction.current=reconciled;
     }
     snapshots.current.push({state:merged,at:stamp});if(snapshots.current.length>12)snapshots.current.shift();
-    const signature=JSON.stringify([merged.code,merged.roundId,merged.phase,merged.countdown,merged.winner,merged.selfDamage,merged.players.map((p,i)=>[p.name,p.color,p.badge,p.score,p.selfHits,p.ready,p.effects,merged.bullets.filter(b=>b.owner===i).length])]);
+    const signature=JSON.stringify([merged.code,merged.roundId,merged.phase,merged.countdown,merged.winner,merged.selfDamage,merged.players.map((p,i)=>[p.name,p.color,p.badge,p.score,p.selfHits,p.ready,p.respawnAt,p.spawnSerial,p.effects,merged.bullets.filter(b=>b.owner===i).length])]);
     if(signature!==uiSignature.current){uiSignature.current=signature;setState(merged)}
   };
   const requestLandscape=async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen?.()}catch{}const orientation=screen.orientation as unknown as{lock?:(mode:string)=>Promise<void>};void orientation.lock?.('landscape').catch(()=>undefined)};
@@ -136,11 +138,12 @@ function App(){
   useEffect(()=>{const ready=Boolean(state&&slot!==undefined&&state.players[slot]?.ready);document.documentElement.classList.toggle('self-ready',ready);return()=>document.documentElement.classList.remove('self-ready')},[Boolean(state&&slot!==undefined&&state.players[slot]?.ready)]);
   useEffect(()=>{const root=document.documentElement,hits=Math.min(3,state?.players[slot??-1]?.selfHits??0),enabled=Boolean(state?.selfDamage&&slot!==undefined);root.classList.toggle('self-damage',enabled);root.classList.remove('self-damage-hits-0','self-damage-hits-1','self-damage-hits-2','self-damage-hits-3');if(enabled)root.classList.add(`self-damage-hits-${hits}`);return()=>{root.classList.remove('self-damage','self-damage-hits-0','self-damage-hits-1','self-damage-hits-2','self-damage-hits-3')}},[state?.selfDamage,state?.players[slot??-1]?.selfHits,slot]);
   useEffect(()=>{const root=document.documentElement,winner=state?.phase==='result'?state.players[state.winner??-1]:undefined;if(winner){const winnerIndex=state?.winner??0;root.classList.add('round-result');root.style.setProperty('--round-winner-label',JSON.stringify(`${winner.badge??'★'} ${playerName(winner,winnerIndex)} TURU KAZANDI!`));root.style.setProperty('--round-winner-color',playerColor(winner,winnerIndex))}return()=>{root.classList.remove('round-result');root.style.removeProperty('--round-winner-label');root.style.removeProperty('--round-winner-color')}},[state]);
+  useEffect(()=>{if(!state?.players[slot??-1]?.respawnAt)return;const timer=setInterval(()=>setRespawnClock(performance.now()),100);return()=>clearInterval(timer)},[state?.players[slot??-1]?.respawnAt,slot]);
   useEffect(()=>{
     if(!socket||slot===undefined||!code)return;
     const timer=setInterval(()=>{
       if(!socket.connected||!socket.io.engine?.transport?.writable||!outbox.current.length)return;
-      socket.emit('input-batch',{code,roundId:latestState.current?.roundId,commands:outbox.current.splice(0,MAX_PENDING)});
+      socket.emit('input-batch',{code,roundId:latestState.current?.roundId,spawnSerial:latestState.current?.players[slot]?.spawnSerial,commands:outbox.current.splice(0,MAX_PENDING)});
     },1000/30);
     return()=>clearInterval(timer);
   },[slot,socket,code]);
@@ -173,24 +176,24 @@ function App(){
       const display=before&&after?smoothState(before.state,after.state,amount):smoothState(undefined,current,1);
       if(display.phase!==current.phase||display.roundId!==current.roundId)Object.assign(display,smoothState(undefined,current,1));
       const local=current.players[slot];
-      if(local&&current.phase==='playing'&&stamp-stateArrivedAt.current<500&&socket?.connected){
+      if(local&&!local.respawnAt&&current.phase==='playing'&&stamp-stateArrivedAt.current<500&&socket?.connected){
         prediction.current??={x:local.x,y:local.y,a:local.a};
         previousPrediction.current??=prediction.current;
         simulationTime.current+=delta;
-        const speed=(current.tankSpeed??7.1)*(local.effects?.speed?1.7:1),others=current.players.filter((_,i)=>i!==slot);
+        const speed=(current.tankSpeed??7.1)*(local.effects?.speed?1.7:1),others=current.players.filter((p,i)=>i!==slot&&!p.respawnAt),arena=arenaSize(current);
         while(simulationTime.current>=STEP_MS){
           simulationTime.current-=STEP_MS;
           if(pendingInputs.current.length>=MAX_PENDING)continue;
           const command={seq:++inputSequence.current,move:controls.current.move,heading:controls.current.heading};
           previousPrediction.current=prediction.current;
-          prediction.current=advanceTank(prediction.current,command,local.effects?.phase?[]:current.walls??[],speed,others);
+          prediction.current=advanceTank(prediction.current,command,local.effects?.phase?[]:current.walls??[],speed,others,arena);
           pendingInputs.current.push(command);outbox.current.push(command);
         }
         const alpha=Math.min(1,simulationTime.current/STEP_MS),previous=previousPrediction.current,predicted=prediction.current;
         visualError.current.x*=Math.exp(-delta/80);visualError.current.y*=Math.exp(-delta/80);
         const x=blend(previous.x,predicted.x,alpha),y=blend(previous.y,predicted.y,alpha);
-        const displayed=movePredicted(local.effects?.phase?[]:current.walls??[],predicted.x,predicted.y,x+visualError.current.x-predicted.x,y+visualError.current.y-predicted.y);
-        const safe=others.some(other=>Math.hypot(other.x-displayed.x,other.y-displayed.y)<96)?predicted:displayed;
+        const displayed=movePredicted(local.effects?.phase?[]:current.walls??[],predicted.x,predicted.y,x+visualError.current.x-predicted.x,y+visualError.current.y-predicted.y,arena);
+        const safe=others.some(other=>Math.hypot(other.x-displayed.x,other.y-displayed.y)<arena.radius*2)?predicted:displayed;
         const a=blendAngle(previous.a,predicted.a,alpha);
         display.players[slot]={...local,...safe,a,turret:a,moving:controls.current.move>.05};
       }else{prediction.current=undefined;previousPrediction.current=undefined;simulationTime.current=0;visualError.current={x:0,y:0}}
@@ -212,7 +215,7 @@ function App(){
       const strength=Math.min(1,(length-8)/48);driveInput(x/length*strength*.5,y/length*strength*.5);
     };
     const down=(event:PointerEvent)=>{
-      if(active!==undefined||latestState.current?.phase!=='playing'||event.clientX>innerWidth*.48||event.clientY<52)return;
+      if(active!==undefined||latestState.current?.phase!=='playing'||latestState.current.players[slotRef.current??0]?.respawnAt||event.clientX>innerWidth*.48||event.clientY<52)return;
       if((event.target as Element).closest('button,input,select,header,.invite,.emoji-picker'))return;
       active=event.pointerId;origin={x:event.clientX,y:event.clientY};setStickOrigin(origin);release();
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -232,15 +235,19 @@ function App(){
   }
   if(!state)return <main className="lobby lobby-settings"><div className="menu-stars"/><button className="settings-back" onClick={()=>{setLobbyScreen('home');setErr('')}}>← ANA MENÜ</button><div className="game-badge">ONLINE • 2–4 OYUNCU</div><div className="tank-logo"><span>◢</span><i/></div><div className="brand">NEON<br/><b>TANK DUEL</b></div><p className="tagline">Labirente gir. Sekmeyi hesapla. Rakiplerini yok et.</p><div className="feature-row"><span>⚡ GÜÇLER</span><span>◈ 4 ARENA</span><span>● ONLINE</span></div><section className="lobby-card">
 <div className="room-settings"><label className="speed">TANK HIZI<select value={speed} onChange={event=>setSpeed(event.target.value)}><option value="slow">Yavaş</option><option value="normal">Normal</option><option value="fast">Hızlı</option></select></label><label className="speed">KİŞİ SAYISI<select value={playerCount} onChange={event=>setPlayerCount(Number(event.target.value))}><option value={2}>2 Oyuncu</option><option value={3}>3 Oyuncu</option><option value={4}>4 Oyuncu</option></select></label></div>
+<label className="speed">OYUN TÜRÜ<select value={gameMode} onChange={event=>setGameMode(event.target.value as 'classic'|'survivor')}><option value="classic">Klasik Düello</option><option value="survivor">Survivor</option></select></label>
+{gameMode==='survivor'&&<p className="survivor-help">Öldüren 1 puan alır. Ölen oyuncu 3 saniye sonra rastgele bir noktada yeniden doğar. İlk 5 puan kazanır.</p>}
 <label className="speed">HARİTA DÜZENİ<select value={layout} onChange={event=>setLayout(event.target.value)}><option value="classic">Klasik Labirent</option><option value="narrow">Dar Koridorlar</option><option value="open">Açık Arena</option><option value="corners">Dört Köşe</option></select></label>
-<label className="rule-toggle"><input type="checkbox" checked={selfDamage} onChange={event=>setSelfDamage(event.target.checked)}/><span><b>KENDİ MERMİN HASAR VERSİN</b><small>Açıkken seken kendi mermin 3 kez sana değerse rakip eli kazanır.</small></span></label>
-<button className="primary" onClick={()=>{requestLandscape();socket?.emit('create-room',{speed,players:playerCount,layout,selfDamage,profile})}}>＋ ONLINE ODA OLUŞTUR</button><button className="bot-game" onClick={()=>{requestLandscape();socket?.emit('create-bot-game',{speed,profile})}}>◆ YAPAY ZEKAYA KARŞI</button><div className="power-guide"><b>GÜÇ KAPSÜLLERİ</b><span>S Tank Hızı · M Mermi Hızı · 2 Çift · K Kalkan · U Menzil · D Delici · R Roket · ☢ Mayın · G Gizli · F Faz</span></div><div className="or"><span/>ODA KODUYLA KATIL<span/></div><div className="join-row"><input value={join} onChange={event=>setJoin(event.target.value.toUpperCase())} maxLength={4} placeholder="ODA KODU"/><button className="secondary" onClick={()=>{requestLandscape();socket?.emit('join-room',{code:join,profile})}}>KATIL</button></div></section>{err&&<small>{err}</small>}<footer>İLK 5 SKOR MAÇI KAZANIR</footer></main>;
+<label className="rule-toggle"><input type="checkbox" checked={selfDamage} onChange={event=>setSelfDamage(event.target.checked)}/><span><b>KENDİ MERMİN HASAR VERSİN</b><small>{gameMode==='survivor'?'Seken kendi mermin 3 kez değerse rakip 1 puan alır ve yeniden doğarsın.':'Açıkken seken kendi mermin 3 kez sana değerse rakip eli kazanır.'}</small></span></label>
+<button className="primary" onClick={()=>{requestLandscape();socket?.emit('create-room',{speed,players:playerCount,layout,selfDamage,gameMode,profile})}}>＋ ONLINE ODA OLUŞTUR</button><button className="bot-game" onClick={()=>{requestLandscape();socket?.emit('create-bot-game',{speed,profile})}}>◆ YAPAY ZEKAYA KARŞI</button><div className="power-guide"><b>GÜÇ KAPSÜLLERİ</b><span>S Tank Hızı · M Mermi Hızı · 2 Çift · K Kalkan · U Menzil · D Delici · R Roket · ☢ Mayın · G Gizli · F Faz</span></div><div className="or"><span/>ODA KODUYLA KATIL<span/></div><div className="join-row"><input value={join} onChange={event=>setJoin(event.target.value.toUpperCase())} maxLength={4} placeholder="ODA KODU"/><button className="secondary" onClick={()=>{requestLandscape();socket?.emit('join-room',{code:join,profile})}}>KATIL</button></div></section>{err&&<small>{err}</small>}<footer>İLK 5 SKOR MAÇI KAZANIR</footer></main>;
   const player=state.players[slot!],effects=player?.effects,ammo=5-state.bullets.filter(bullet=>bullet.owner===slot).length,theme=THEMES[state.theme??'neon']??THEMES.neon;
+  const serverNow=(latestState.current?.serverTime??Date.now())+Math.max(0,respawnClock-stateArrivedAt.current);
+  const respawnRemaining=player?.respawnAt?Math.max(1,Math.ceil((player.respawnAt-serverNow)/1000)):0;
   const leave=()=>{socket?.emit('leave-room',{code});returnToMenu()};
-  const headline=state.phase==='waiting'?`Oyuncular bekleniyor ${state.players.length}/${state.maxPlayers??2}`:state.phase==='countdown'?'TUR HAZIRLANIYOR':state.phase==='result'?(state.winner===slot?'ELİ KAZANDIN!':`${playerName(state.players[state.winner??0],state.winner??0)} KAZANDI`):state.phase==='match-over'?`${playerName(state.players[state.winner??0],state.winner??0)} MAÇI KAZANDI!`:'HEDEFİ YOK ET';
+  const headline=state.phase==='waiting'?`Oyuncular bekleniyor ${state.players.length}/${state.maxPlayers??2}`:state.phase==='countdown'?'TUR HAZIRLANIYOR':state.phase==='result'?(state.winner===slot?'ELİ KAZANDIN!':`${playerName(state.players[state.winner??0],state.winner??0)} KAZANDI`):state.phase==='match-over'?`${playerName(state.players[state.winner??0],state.winner??0)} MAÇI KAZANDI!`:state.gameMode==='survivor'?'SURVIVOR • HEDEFİ YOK ET':'HEDEFİ YOK ET';
   const activePowers=[effects?.speed&&'S HIZ',effects?.bulletSpeed&&'M HIZLI MERMİ',effects?.phase&&'F FAZ GEÇİŞİ',effects?.double&&'Ⅱ ÇİFT',effects?.shield&&'◇ KALKAN',effects?.invisible&&'◌ GİZLİ',effects?.range&&'↗ UZUN MENZİL',Boolean(effects?.rockets)&&`R ROKET ×${effects?.rockets}`,Boolean(effects?.pierces)&&`D DELİCİ ×${effects?.pierces}`].filter(Boolean);
   const sendReaction=(emoji:string)=>{navigator.vibrate?.(12);socket?.emit('reaction',{code,emoji});setEmojiOpen(false)};
-return <main className={`game theme-${state.theme??'neon'}`}><div className="orientation-hint"><span>↻</span><div><b>TELEFONUNU YATAY ÇEVİR</b><small>En iyi oyun deneyimi için</small></div></div><header><button className="menu" onClick={leave}>MENÜ</button><div className="round-title"><strong>{headline}</strong><em>{theme.name}{state.players.some(item=>item.isBot)?' • YAPAY ZEKÂ':''}</em></div><div className="scoreboard">{state.players.map((item,index)=><span key={index} className={index===slot?'mine':''} style={{color:playerColor(item,index)}} title={`${playerName(item,index)}${index===slot?' (Sen)':''}`}><i>{item.badge??'★'}</i><span className="score-name">{playerName(item,index)}</span><b>{item.score}</b></span>)}</div><button className="emoji-button" onClick={()=>setEmojiOpen(open=>!open)}>😀</button></header>{emojiOpen&&<div className="emoji-picker">{['😄','😎','😱','🔥','💥','👋'].map(emoji=><button key={emoji} onClick={()=>sendReaction(emoji)}>{emoji}</button>)}</div>}<div className="power-status">{activePowers.map(item=><span key={String(item)}>{item}</span>)}</div><canvas ref={canvas}/>{state.phase==='waiting'&&<section className="invite"><b>Oda kodun: {code}</b><small>{state.players.length}/{state.maxPlayers??2} oyuncu katıldı • {state.mapLayout==='narrow'?'Dar Koridor':state.mapLayout==='open'?'Açık Arena':state.mapLayout==='corners'?'Dört Köşe':'Klasik Labirent'}</small><div className="ready-list">{state.players.map((item,index)=><span key={index} className={item.ready?'ready':''} style={{color:playerColor(item,index)}}>{item.badge??'★'} {playerName(item,index)}{index===slot?' (Sen)':''} · {item.ready?'HAZIR':'BEKLİYOR'}</span>)}</div><button className="ready-button" onClick={()=>{navigator.vibrate?.(20);socket?.emit('set-ready',{code,ready:!player?.ready})}}>{player?.ready?'HAZIR DEĞİLİM':'HAZIRIM'}</button><button onClick={share}>DAVETİ PAYLAŞ</button></section>}{state.phase==='countdown'&&<div className="countdown" key={state.countdown}>{state.countdown||'BAŞLA!'}</div>}<section className="controls"><div className={`stick move${stickOrigin?' dynamic-stick':''}`} style={stickOrigin?{left:stickOrigin.x,top:stickOrigin.y}:undefined}><span className="knob" style={{transform:`translate(${drive.x*32}px,${drive.y*32}px)`}}>SÜR</span></div>{Boolean(effects?.mines)&&<button className="mine-button" onPointerDown={event=>{event.preventDefault();navigator.vibrate?.(16);socket?.emit('deploy-mine',{code})}}>MAYIN<br/>×{effects?.mines}</button>}<button className="fire" onPointerDown={event=>{event.preventDefault();navigator.vibrate?.(12);socket?.emit('fire',{code})}}><span>ATEŞ</span><span className="ammo" aria-label={`${ammo} mermi kaldı`}>{[0,1,2,3,4].map(index=><i key={index} className={index<ammo?'loaded':'used'}>●</i>)}</span></button></section>{err&&<small>{err}</small>}</main>;
+return <main className={`game theme-${state.theme??'neon'}${state.gameMode==='survivor'?' mode-survivor':''}`}><div className="orientation-hint"><span>↻</span><div><b>TELEFONUNU YATAY ÇEVİR</b><small>En iyi oyun deneyimi için</small></div></div><header><button className="menu" onClick={leave}>MENÜ</button><div className="round-title"><strong>{headline}</strong><em>{theme.name}{state.gameMode==='survivor'?' • SURVIVOR':''}{state.players.some(item=>item.isBot)?' • YAPAY ZEKÂ':''}</em></div><div className="scoreboard">{state.players.map((item,index)=><span key={index} className={index===slot?'mine':''} style={{color:playerColor(item,index)}} title={`${playerName(item,index)}${index===slot?' (Sen)':''}`}><i>{item.badge??'★'}</i><span className="score-name">{playerName(item,index)}</span><b>{item.score}</b></span>)}</div><button className="emoji-button" onClick={()=>setEmojiOpen(open=>!open)}>😀</button></header>{emojiOpen&&<div className="emoji-picker">{['😄','😎','😱','🔥','💥','👋'].map(emoji=><button key={emoji} onClick={()=>sendReaction(emoji)}>{emoji}</button>)}</div>}<div className="power-status">{activePowers.map(item=><span key={String(item)}>{item}</span>)}</div><canvas ref={canvas}/>{Boolean(player?.respawnAt&&state.phase==='playing')&&<div className="respawn-overlay"><small>YENİDEN DOĞUYORSUN</small><strong>{respawnRemaining}</strong></div>}{state.phase==='waiting'&&<section className="invite"><b>Oda kodun: {code}</b><small>{state.players.length}/{state.maxPlayers??2} oyuncu katıldı • {state.gameMode==='survivor'?'Survivor':'Klasik Düello'} • {state.mapLayout==='narrow'?'Dar Koridor':state.mapLayout==='open'?'Açık Arena':state.mapLayout==='corners'?'Dört Köşe':'Klasik Labirent'}</small><div className="ready-list">{state.players.map((item,index)=><span key={index} className={item.ready?'ready':''} style={{color:playerColor(item,index)}}>{item.badge??'★'} {playerName(item,index)}{index===slot?' (Sen)':''} · {item.ready?'HAZIR':'BEKLİYOR'}</span>)}</div><button className="ready-button" onClick={()=>{navigator.vibrate?.(20);socket?.emit('set-ready',{code,ready:!player?.ready})}}>{player?.ready?'HAZIR DEĞİLİM':'HAZIRIM'}</button><button onClick={share}>DAVETİ PAYLAŞ</button></section>}{state.phase==='countdown'&&<div className="countdown" key={state.countdown}>{state.countdown||'BAŞLA!'}</div>}<section className="controls"><div className={`stick move${stickOrigin?' dynamic-stick':''}`} style={stickOrigin?{left:stickOrigin.x,top:stickOrigin.y}:undefined}><span className="knob" style={{transform:`translate(${drive.x*32}px,${drive.y*32}px)`}}>SÜR</span></div>{Boolean(effects?.mines)&&<button className="mine-button" onPointerDown={event=>{event.preventDefault();navigator.vibrate?.(16);socket?.emit('deploy-mine',{code})}}>MAYIN<br/>×{effects?.mines}</button>}<button className="fire" onPointerDown={event=>{event.preventDefault();navigator.vibrate?.(12);socket?.emit('fire',{code})}}><span>ATEŞ</span><span className="ammo" aria-label={`${ammo} mermi kaldı`}>{[0,1,2,3,4].map(index=><i key={index} className={index<ammo?'loaded':'used'}>●</i>)}</span></button></section>{err&&<small>{err}</small>}</main>;
 }
 
 createRoot(document.getElementById('root')!).render(<App/>);

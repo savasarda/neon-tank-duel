@@ -4,19 +4,20 @@ export const STEP_MS = 1000 / 60;
 export const MAX_PENDING = 30;
 
 // One command is exactly one physics step on both client and server.
-export function advanceTank(position, input, walls, speed, others = []) {
+export function advanceTank(position, input, walls, speed, others = [], arena = {}) {
   const move = Math.max(0, Math.min(1, input.move || 0));
   const difference = Math.atan2(Math.sin(input.heading - position.a), Math.cos(input.heading - position.a));
   const a = move > 0 ? position.a + Math.max(-0.3, Math.min(0.3, difference)) : position.a;
   const distance = move * speed / 2;
-  const next = moveCircle(walls, position.x, position.y, Math.cos(a) * distance, Math.sin(a) * distance, 48, 1400, 1000);
-  if (others.some(other => (other.x - next.x) ** 2 + (other.y - next.y) ** 2 < 96 ** 2)) return { x: position.x, y: position.y, a };
+  const radius = arena.radius ?? 48;
+  const next = moveCircle(walls, position.x, position.y, Math.cos(a) * distance, Math.sin(a) * distance, radius, arena.width ?? 1400, arena.height ?? 1000);
+  if (others.some(other => (other.x - next.x) ** 2 + (other.y - next.y) ** 2 < (radius * 2) ** 2)) return { x: position.x, y: position.y, a };
   return { ...next, a };
 }
 
-export function replayTank(authoritative, pending, walls, speed, others = []) {
+export function replayTank(authoritative, pending, walls, speed, others = [], arena = {}) {
   let position = { x: authoritative.x, y: authoritative.y, a: authoritative.a };
-  for (const command of pending) position = advanceTank(position, command, walls, speed, others);
+  for (const command of pending) position = advanceTank(position, command, walls, speed, others, arena);
   return position;
 }
 
