@@ -20,11 +20,13 @@ function roomCode(){let value;do value=Math.random().toString(36).slice(2,6).toU
 function arenaFor(layout){return createMaze(W,H,WALL,MAP_LAYOUTS[layout]||MAP_LAYOUTS.classic)}
 function freshEffects(){return{speedUntil:0,doubleUntil:0,shieldUntil:0,invisibleUntil:0,rangeUntil:0,bulletSpeedUntil:0,phaseUntil:0,mines:0,rockets:0,pierces:0}}
 function placePlayer(player,spawn,angle){Object.assign(player,{x:spawn.x,y:spawn.y,a:angle,turret:angle,cooldown:0,input:{},inputQueue:createInputQueue(),motionProtocol:false,selfHits:0,effects:freshEffects()})}
+function shuffle(values){const result=[...values];for(let index=result.length-1;index>0;index--){const swap=Math.floor(Math.random()*(index+1));[result[index],result[swap]]=[result[swap],result[index]]}return result}
+function nextSpawnOrder(room,spawnCount){const playerCount=room.players.length,slots=Array.from({length:spawnCount},(_,index)=>index);for(let attempt=0;attempt<32;attempt++){const candidate=shuffle(slots).slice(0,playerCount);if(!room.spawnOrder||candidate.every((slot,index)=>slot!==room.spawnOrder[index]))return candidate}return room.spawnOrder.map(slot=>(slot+1)%spawnCount)}
 function newRound(room){
   const arena=arenaFor(room.mapLayout);room.walls=arena.walls;room.spawns=arena.spawns;room.bullets=[];room.trails=[];room.mines=[];room.powerups=[];room.reactions=[];
   const choices=ARENA_THEMES.filter(theme=>theme!==room.theme);room.theme=choices[Math.floor(Math.random()*choices.length)];room.roundId=(room.roundId||0)+1;room.explosion=null;
   room.phase='countdown';room.countdown=3;room.roundStartsAt=Date.now()+3000;room.nextPowerupAt=room.roundStartsAt+4000;
-  room.players.forEach((player,index)=>{const spawn=arena.spawns[index],angle=Math.atan2(H/2-spawn.y,W/2-spawn.x);placePlayer(player,spawn,angle)});
+  room.spawnOrder=nextSpawnOrder(room,arena.spawns.length);room.players.forEach((player,index)=>{const spawn=arena.spawns[room.spawnOrder[index]],angle=Math.atan2(H/2-spawn.y,W/2-spawn.x);placePlayer(player,spawn,angle)});
 }
 function publicPlayer(player,now){const{id,input,cooldown,inputQueue,motionProtocol,wasPhasing,...visible}=player;return{...visible,lastProcessedInput:inputQueue?.processed??0,moving:(player.input?.move||0)>.05,effects:{speed:player.effects.speedUntil>now,double:player.effects.doubleUntil>now,shield:player.effects.shieldUntil>now,invisible:player.effects.invisibleUntil>now,range:player.effects.rangeUntil>now,bulletSpeed:player.effects.bulletSpeedUntil>now,phase:player.effects.phaseUntil>now,mines:player.effects.mines,rockets:player.effects.rockets,pierces:player.effects.pierces}}}
 function snapshot(room,includeWalls=false){const now=Date.now();return{motionVersion:1,serverTime:now,code:room.code,maxPlayers:room.maxPlayers,mapLayout:room.mapLayout,tankSpeed:room.tankSpeed,selfDamage:room.selfDamage,phase:room.phase,countdown:room.countdown,roundId:room.roundId,theme:room.theme,explosion:room.explosion,players:room.players.map(player=>publicPlayer(player,now)),bullets:room.bullets,trails:room.trails,...(includeWalls?{walls:room.walls}:{}),mines:room.mines,powerups:room.powerups,reactions:room.reactions,winner:room.winner}}
@@ -60,7 +62,7 @@ function exitPhaseSafely(room,target){
     const angle=step*Math.PI/12,x=player.x+Math.cos(angle)*radius,y=player.y+Math.sin(angle)*radius;
     if(!circleTouchesWorld(room.walls,x,y,COLLISION_R,W,H)&&!room.players.some((other,index)=>index!==target&&(other.x-x)**2+(other.y-y)**2<96**2)){player.x=x;player.y=y;return}
   }
-  Object.assign(player,room.spawns[target]);
+  Object.assign(player,room.spawns[room.spawnOrder?.[target]??target]);
 }
 function addBullet(room,owner,angle,type='normal'){
   const player=room.players[owner],rocket=type==='rocket',piercing=type==='pierce',longRange=player.effects.rangeUntil>Date.now(),boosted=player.effects.bulletSpeedUntil>Date.now(),offset=20,speed=(rocket?8:piercing?7:5.5)*(boosted?1.65:1);
